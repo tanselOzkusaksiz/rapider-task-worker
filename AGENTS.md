@@ -151,7 +151,7 @@ Execute strictly using the workspace's repo definitions and provided tools:
 
 1. **Strict Oldest-5 Open Tasks Batch Size:**
    - Every fetch query MUST enforce:
-     - `where: { kind: 'task', status: { inq: ['open', 'Open'] }, isDeleted: { neq: true } }`
+     - `where: { kind: 'task', status: { inq: ['open', 'Open', 'queued', 'Queued'] }, isDeleted: { neq: true } }`
      - `order: ['occurredAt ASC', 'createdDate ASC']`
      - `limit: 5`
 2. **Drain Loop ("Finish Oldest 5 -> Fetch Next 5"):**

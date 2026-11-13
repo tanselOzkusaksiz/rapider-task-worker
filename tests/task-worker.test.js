@@ -28,31 +28,31 @@ const {
   resolveTargetStatusMappingPure,
 } = require('../scripts/patch-workitem-task');
 
-test('selectOldestOpenTaskWorkItemsPure selects strictly oldest 5 open kind="task" WorkItems', () => {
+test('selectOldestOpenTaskWorkItemsPure selects strictly oldest 5 open/queued kind="task" WorkItems', () => {
   const sampleItems = [
     { id: 'wi-new-7', kind: 'task', status: 'open', occurredAt: '2026-11-13T10:07:00Z' },
     { id: 'wi-approval', kind: 'approval', status: 'open', occurredAt: '2026-11-13T08:00:00Z' },
     { id: 'wi-resolved', kind: 'task', status: 'resolved', occurredAt: '2026-11-13T08:01:00Z' },
+    { id: 'wi-completed', kind: 'task', status: 'completed', occurredAt: '2026-11-13T08:01:30Z' },
     { id: 'wi-pending', kind: 'task', status: 'pending', occurredAt: '2026-11-13T08:02:00Z' },
     { id: 'wi-deleted', kind: 'task', status: 'open', isDeleted: true, occurredAt: '2026-11-13T08:03:00Z' },
     { id: 'wi-open-3', kind: 'task', status: 'Open', occurredAt: '2026-11-13T09:03:00Z' },
     { id: 'wi-open-1', kind: 'task', status: 'open', occurredAt: '2026-11-13T09:01:00Z' },
     { id: 'wi-open-5', kind: 'task', status: 'open', occurredAt: '2026-11-13T09:05:00Z' },
-    { id: 'wi-open-2', kind: 'task', status: 'open', occurredAt: '2026-11-13T09:02:00Z' },
+    { id: 'wi-queued-2', kind: 'task', status: 'queued', occurredAt: '2026-11-13T09:02:00Z' },
     { id: 'wi-open-6', kind: 'task', status: 'open', occurredAt: '2026-11-13T09:06:00Z' },
     { id: 'wi-open-4', kind: 'task', status: 'open', occurredAt: '2026-11-13T09:04:00Z' },
   ];
 
   const { selected, totalEligible } = selectOldestOpenTaskWorkItemsPure(sampleItems, {
     limit: 5,
-    eligibleStatuses: ['open', 'Open'],
   });
 
   assert.equal(totalEligible, 7);
   assert.equal(selected.length, 5);
   assert.deepEqual(
     selected.map((i) => i.id),
-    ['wi-open-1', 'wi-open-2', 'wi-open-3', 'wi-open-4', 'wi-open-5']
+    ['wi-open-1', 'wi-queued-2', 'wi-open-3', 'wi-open-4', 'wi-open-5']
   );
 });
 

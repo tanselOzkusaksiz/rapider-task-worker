@@ -180,7 +180,7 @@ Unlike single-shot pollers that process arbitrary queue sizes or newest-first it
    {
      "where": {
        "kind": "task",
-       "status": { "inq": ["open", "Open"] },
+       "status": { "inq": ["open", "Open", "queued", "Queued"] },
        "isDeleted": { "neq": true }
      },
      "order": ["occurredAt ASC", "createdDate ASC"],

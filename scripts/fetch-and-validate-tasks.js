@@ -38,7 +38,9 @@ const TASKS_QUEUE_FILE = path.resolve(WORKER_ROOT, 'tasks-queue.json');
 const TASK_ATTACHMENTS_DIR = path.resolve(WORKER_ROOT, '_process-logs/task-attachments');
 
 const DEFAULT_BATCH_LIMIT = parseInt(process.env.TASK_WORKER_BATCH_SIZE || '5', 10) || 5;
-const DEFAULT_ELIGIBLE_STATUSES = (process.env.TASK_WORKER_ELIGIBLE_STATUSES || 'open,Open')
+const DEFAULT_ELIGIBLE_STATUSES = (
+  process.env.TASK_WORKER_ELIGIBLE_STATUSES || 'open,Open,queued,Queued'
+)
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
