@@ -48,7 +48,7 @@ function git(cwd, args, opts = {}) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
-    stdio: opts.stdio || ['ignore', 'pipe', 'pipe'],
+    stdio: opts.stdio || (opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe']),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
   }).trim();
 }
@@ -108,7 +108,7 @@ function ensureGitRepoAndIdleBranch(repoDir, projectId, workspaceName = '') {
       );
     }
     git(repoDir, ['add', 'README.md']);
-    git(repoDir, ['commit', '-m', 'chore: initialize workspace repository']);
+    git(repoDir, ['commit', '--no-gpg-sign', '-m', 'chore: initialize workspace repository']);
   } else {
     try {
       git(repoDir, ['config', 'user.name']);
@@ -150,7 +150,7 @@ function parkWorkspaceRepo(projectId, options = {}) {
     if (dirty) {
       git(repoDir, ['add', '-A']);
       try {
-        git(repoDir, ['commit', '-m', 'chore(snapshot): update workspace metadata snapshot']);
+        git(repoDir, ['commit', '--no-gpg-sign', '-m', 'chore(snapshot): update workspace metadata snapshot']);
       } catch (_) {}
     }
     git(repoDir, ['checkout', '-f', 'idle']);
@@ -387,7 +387,7 @@ async function activateWorkspaceRepo(projectId, options = {}) {
     if (dirty) {
       git(repoDir, ['add', '-A']);
       try {
-        git(repoDir, ['commit', '-m', `chore(snapshot): sync workspace ${safeId} context`]);
+        git(repoDir, ['commit', '--no-gpg-sign', '-m', `chore(snapshot): sync workspace ${safeId} context`]);
       } catch (_) {}
     }
   }
