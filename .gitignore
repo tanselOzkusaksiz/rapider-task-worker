@@ -1,0 +1,20 @@
+# Secrets & Environment Variables (NEVER COMMIT)
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Isolated Tenant Workspace Clones & Runtime Queues
+WORKSPACES/
+tasks-queue.json
+_artifacts/
+_process-logs/task-attachments/
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+
