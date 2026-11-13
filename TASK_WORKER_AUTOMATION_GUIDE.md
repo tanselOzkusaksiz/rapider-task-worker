@@ -1,19 +1,19 @@
 # Rapider Task Worker Automation & Workspace Repo Isolation Guide
 
-This document is the authoritative architecture and operational specification for **`rapider-task-worker`** (**`ISOLATED-TASK-WORKER`**) — the autonomous scheduled task runner that executes queued background Workspace tasks (`WorkItem` entities with `kind: "task"`) in strict **FIFO batches of 5**, isolated per target Workspace repository using the **Orphan Idle Branch Context Protocol**.
+This document is the authoritative architecture and operational specification for **`rapider-task-worker`** (**`ISOLATED-TASK-WORKER`**) — the autonomous scheduled task runner that executes open background Workspace tasks (`WorkItem` entities with `"kind": "task"` and `"status": "open"`) in strict **FIFO batches of 5**, isolated per target Workspace repository using the **Orphan Idle Branch Context Protocol**.
 
 ---
 
 ## 1. System Architecture & Lifecycle Diagrams
 
-### A. `WorkItem` (`kind: "task"`) State Lifecycle
+### A. `WorkItem` (`kind: "task"`, `status: "open"`) State Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Queued: Agent Runtime V2 / User creates WorkItem (kind = 'task', status = 'queued')
+    [*] --> Open: User / App / Agent creates WorkItem (kind = 'task', status = 'open')
 
     state "Batch-of-5 Scheduled Ingestion" as Ingest {
-        Queued --> Running: ISOLATED-TASK-WORKER claims oldest 5 (status = 'running', revision + 1)
+        Open --> Running: ISOLATED-TASK-WORKER claims oldest 5 (status = 'running', revision + 1)
     }
 
     state "Step 1 & Step 2: Repo Switch & Guardrail" as Guardrail {
@@ -29,8 +29,8 @@ stateDiagram-v2
     }
 
     state "User Inbox Loop" as InboxLoop {
-        PendingAttention --> Queued: User replies in WorkItem thread & re-queues task
-        FailedAttention --> Queued: User fixes prerequisite & re-queues task
+        PendingAttention --> Open: User replies in WorkItem thread & sets status = 'open'
+        FailedAttention --> Open: User fixes prerequisite & sets status = 'open'
     }
 
     Resolved --> [*]
@@ -41,8 +41,8 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    Cron["Scheduled Trigger (/schedule */5 * * * * or Worker Daemon)"] --> Fetch["Fetch Oldest 5 Tasks<br/>(kind = 'task', status in ['queued','running'], order occurredAt ASC, limit = 5)"]
-    Fetch --> CheckEmpty{"Tasks Found?"}
+    Cron["Scheduled Trigger (/schedule */5 * * * * or Worker Daemon)"] --> Fetch["Fetch Oldest 5 Open Tasks<br/>(kind = 'task', status = 'open', order occurredAt ASC, limit = 5)"]
+    Fetch --> CheckEmpty{"Open Tasks Found?"}
     CheckEmpty -- "0 Tasks" --> ParkAll["Park All WORKSPACES/* Repos to 'idle' & Sleep"]
     CheckEmpty -- "1..5 Tasks" --> TaskLoop["For Each Task in Batch (1..5)"]
 
@@ -74,17 +74,17 @@ flowchart TD
 
 ## 2. The 5-Step Isolated Task Execution Lifecycle
 
-### Origin: How Tasks Enter the Queue (`status: "queued"`)
-When a user asks the Rapider AI Assistant (`Agent Runtime V2`) for work that cannot be deterministically completed in one immediate CRUD/tool step — such as multi-table 12-month worst/best-case income projections, custom Handlebars template authoring, formatted PDF/CSV report packs, or multi-step data preparation — `AgentAsyncTaskWorkItemService` creates a `WorkItem`:
+### Origin: How Tasks Enter the Queue (`status: "open"`, `kind: "task"`)
+When a user, application, or AI workflow creates an asynchronous task (`POST /work-items`), the `WorkItem` model defaults to `kind: "task"` and `status: "open"`:
 - `kind`: `"task"`
-- `status`: `"queued"`
+- `status`: `"open"`
 - `needsAttention`: `false`
 - `priority`: `2`
 - `revision`: `1`
 - `projectId`: `<targetWorkspaceProjectId>`
 - `ownerPersonId`: `<requestingPersonId>`
-- `bodyMarkdown`: Synthesized `## Task Description`, `## Original User Request`, and optional `## Context from Prior Steps`
-- `source`: `{ type: "ai_agent_v2", exactUserRequest, threadId, userMessageId, attachmentFileIds, priorStepFindingsSummary }`
+- `bodyMarkdown`: Task specification, `## Original User Request`, and optional prior step context
+- `source`: `{ type, exactUserRequest, threadId, userMessageId, attachmentFileIds, priorStepFindingsSummary }`
 
 ---
 
@@ -162,10 +162,10 @@ This table aligns `rapider-task-worker` transitions with `rapider-server` (`Work
 
 | Stage | `status` | `needsAttention` | Inbox UI Pill Rendering | Authority | When Used & Worker Behavior |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | **`queued`** | `false` | Green pill: `Queued` | Agent Runtime V2 / User | Newly created task (or user-answered task re-queued for execution). Eligible for oldest-5 FIFO batch ingestion. |
-| 2 | **`running`** | `false` | Green pill: `Running` | `ISOLATED-TASK-WORKER` | Task claimed by the active worker batch; repo activated on `main`; execution in progress. Also eligible for stale-lease recovery if interrupted. |
+| 1 | **`open`** | `false` | Green pill: `Open` | User / App / Agent | Newly created open task (or user-answered task set back to `open`). **Primary status ingested by oldest-5 FIFO batch fetcher (`kind: "task"`, `status: "open"`).** |
+| 2 | **`running`** | `false` | Green pill: `Running` | `ISOLATED-TASK-WORKER` | Task claimed by the active worker batch; repo activated on `main`; execution in progress. Also eligible for stale-lease recovery (`--recover-stale`) if interrupted. |
 | 3 | **`resolved`** | `false` | Green pill: `Resolved` | `ISOLATED-TASK-WORKER` | **Task successfully completed.** All requested reports/templates/files/API results are attached in `contextRefs`, executive reply posted in `WorkItemEvent`, and `outcome` populated. *(Note: Backend also treats `'completed'` as a terminal non-attention state).* |
-| 4 | **`pending`** | **`true`** | Red pill: **`Needs attention`** *(surfaces in "Needs attention" tab)* | `ISOLATED-TASK-WORKER` | **Clarification / user input required.** Worker posted specific clarifying question(s) as a `WorkItemEvent` reply and set `recommendation.text`. Ignored by future worker batches until the user replies and sets `status: 'queued'`. |
+| 4 | **`pending`** | **`true`** | Red pill: **`Needs attention`** *(surfaces in "Needs attention" tab)* | `ISOLATED-TASK-WORKER` | **Clarification / user input required.** Worker posted specific clarifying question(s) as a `WorkItemEvent` reply and set `recommendation.text`. Ignored by future worker batches until the user replies and sets `status: 'open'`. |
 | 5 | **`failed`** | **`true`** | Red pill: **`Needs attention`** + `Failed` | `ISOLATED-TASK-WORKER` | **Cannot complete due to blocker.** Worker verified the task is valid/in-scope, but required data tables are empty, permissions are missing, or an upstream API failed permanently. Clear reasons posted in reply and `outcome`. |
 | 6 | **`rejected`** | `false` | Green/Neutral pill: `Rejected` | `ISOLATED-TASK-WORKER` / Admin | **Rejected by Step 2 Guardrail.** Request is unrelated to the Workspace's data/applications, out of scope, or flagged for prompt-injection/security violation. `WorkItemController` enforces `needsAttention: false`. |
 
@@ -173,21 +173,21 @@ This table aligns `rapider-task-worker` transitions with `rapider-server` (`Work
 
 ## 4. Batch-of-5 FIFO Drain Scheduling Architecture
 
-Unlike single-shot pollers that process arbitrary queue sizes or newest-first items, `rapider-task-worker` enforces a deterministic **Oldest-5 Batch Drain Loop**:
+Unlike single-shot pollers that process arbitrary queue sizes or newest-first items, `rapider-task-worker` enforces a deterministic **Oldest-5 Open Tasks Batch Drain Loop**:
 
-1. **Fetch Oldest 5 (`limit: 5`):**
+1. **Fetch Oldest 5 Open Tasks (`limit: 5`):**
    ```json
    {
      "where": {
        "kind": "task",
-       "status": { "inq": ["queued", "running"] },
+       "status": { "inq": ["open", "Open"] },
        "isDeleted": { "neq": true }
      },
      "order": ["occurredAt ASC", "createdDate ASC"],
      "limit": 5
    }
    ```
-   *(Stale `running` tasks are only reclaimed if their `updatedDate` exceeds `STALE_RUNNING_LEASE_MS`, default `15` minutes, preventing duplicate concurrent execution).*
+   *(Across all accessible Workspaces, results are merged and sorted globally by `occurredAt || createdDate` ascending and capped strictly to the global oldest 5. Stale `running` tasks can optionally be reclaimed via `--recover-stale` if `updatedDate` exceeds `STALE_RUNNING_LEASE_MS`).*
 2. **Execute All 5 Sequentially in Isolation:**
    - Task 1 -> Activate Workspace Repo A -> Guardrail -> Execute -> Attach & Patch -> Park Repo A to `idle`.
    - Task 2 -> Activate Workspace Repo B -> Guardrail -> Execute -> Attach & Patch -> Park Repo B to `idle`.
@@ -257,7 +257,7 @@ Every file prepared for a user MUST be self-contained, cleanly titled, and free 
       "projectId": "<projectId>",
       "ownerPersonId": "<personId>",
       "kind": "task",
-      "status": "queued",
+      "status": "open",
       "revision": 1,
       "occurredAt": "2026-11-13T10:59:00.000Z",
       "title": "12-Month Worst-Case & Best-Case Contact/Account Income Report",
@@ -402,14 +402,15 @@ Configure in `.env` (gitignored) or runtime environment:
 
 | Command | Script | Description |
 | :--- | :--- | :--- |
-| `npm run worker` | `scripts/task-worker-daemon.js` | Continuous worker daemon: polls every 5 mins, drains queued tasks in oldest-5 batches, parks repos on idle. |
+| `npm run worker` | `scripts/task-worker-daemon.js` | Continuous worker daemon: polls every 5 mins, drains open tasks (`kind='task'`, `status='open'`) in oldest-5 batches, parks repos on idle. |
 | `npm run worker:1m` | `scripts/task-worker-daemon.js --interval=1m` | Fast polling mode (every 1 minute). |
-| `npm run fetch-tasks` | `scripts/fetch-and-validate-tasks.js --limit=5` | Fetches oldest 5 `WorkItem` (`kind: 'task'`, `status: 'queued'`), runs security pre-screen, downloads attachments to `_process-logs/task-attachments/<id>/`, writes `tasks-queue.json`. |
-| `npm run activate -- --project=<id>` | `scripts/manage-workspace-repos.js --activate=<id>` | Clones/fetches and activates `WORKSPACES/<projectId>/` on `main`, parking all other workspace repos to `idle`. |
+| `npm run fetch-tasks` | `scripts/fetch-and-validate-tasks.js --limit=5` | Fetches global oldest 5 `WorkItem` (`kind: 'task'`, `status: 'open'`), runs security pre-screen, downloads attachments to `_process-logs/task-attachments/<id>/`, writes `tasks-queue.json`. |
+| `npm run activate -- --activate=<id>` | `scripts/manage-workspace-repos.js --activate=<id>` | Clones/syncs and activates `WORKSPACES/<projectId>/` on `main`, parking all other workspace repos to `idle`. |
 | `npm run park:all` | `scripts/manage-workspace-repos.js --park-all` | Parks every repository in `WORKSPACES/` to its orphan `idle` branch. |
 | `npm run status` | `scripts/manage-workspace-repos.js --status` | Prints table of active vs parked workspace repositories and current `tasks-queue.json` state. |
-| `npm run upload-artifact -- --id=<id> --file=<path>` | `scripts/upload-task-artifacts.js` | Uploads generated `.md`/`.pdf`/`.csv`/`.hbs` files to Workspace `ProjectFile` storage and returns `contextRefs` entries. |
-| `npm run update-task -- --id=<id> --status=...` | `scripts/patch-workitem-task.js` | Posts sanitized `WorkItemEvent` reply, updates `WorkItem` (`resolved` / `pending` / `failed` / `rejected`), marks recipient unread, and appends to the daily execution ledger. |
+| `npm run workspace:tools -- <cmd>` | `scripts/workspace-tools-cli.js` | Paginated `/project-data-manager` queries, Handlebars compile/render verifier, `MessageTemplate` saver, RFC-4180 CSV & PDF builders. |
+| `npm run upload-artifact -- --project=<id> --file=<path>` | `scripts/upload-task-artifacts.js` | Uploads generated `.md`/`.pdf`/`.csv`/`.hbs` files to Workspace `ProjectFile` storage and returns `contextRefs` entries. |
+| `npm run patch-task -- --id=<id> --status=...` | `scripts/patch-workitem-task.js` | Enforces attachment & confidentiality gates, uploads `--attach` files, posts `WorkItemEvent` reply, updates `WorkItem` (`resolved` / `pending` / `failed` / `rejected`), marks recipient unread, and appends to the daily execution ledger. |
 | `npm run logs:sync` | `scripts/generate-iteration-logs.js` | Generates structured markdown audit logs under `logs/task-worker-agent-log-YYYYMMDD-{Iteration}.md`. |
 
 ---

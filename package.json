@@ -1,0 +1,34 @@
+{
+  "name": "rapider-task-worker",
+  "version": "1.0.0",
+  "description": "Isolated autonomous background AI task worker (ISOLATED-TASK-WORKER) for processing open Rapider WorkItems (kind='task', status='open') in FIFO batches of 5.",
+  "private": true,
+  "scripts": {
+    "fetch-tasks": "node scripts/fetch-and-validate-tasks.js --limit=5",
+    "fetch-tasks:all": "node scripts/fetch-and-validate-tasks.js --all",
+    "worker": "node scripts/task-worker-daemon.js",
+    "worker:1m": "node scripts/task-worker-daemon.js --interval=1m",
+    "worker:once": "node scripts/task-worker-daemon.js --once",
+    "worker:headless": "node scripts/task-worker-daemon.js --headless",
+    "status": "node scripts/manage-workspace-repos.js --status",
+    "activate": "node scripts/manage-workspace-repos.js",
+    "park:all": "node scripts/manage-workspace-repos.js --park-all",
+    "workspace:tools": "node scripts/workspace-tools-cli.js",
+    "upload-artifact": "node scripts/upload-task-artifacts.js",
+    "patch-task": "node scripts/patch-workitem-task.js",
+    "logs:sync": "node scripts/generate-iteration-logs.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "handlebars": "^4.7.8"
+  },
+  "keywords": [
+    "rapider",
+    "task-worker",
+    "workitems",
+    "isolated-workspace",
+    "automation"
+  ],
+  "author": "Rapider AI",
+  "license": "UNLICENSED"
+}

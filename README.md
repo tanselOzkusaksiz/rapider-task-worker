@@ -1,6 +1,6 @@
 # Rapider Isolated Task Worker (`rapider-task-worker`)
 
-Autonomous, workspace-isolated background AI task runner (**`ISOLATED-TASK-WORKER`**) for processing queued Rapider `WorkItem` (`kind: "task"`) requests in **FIFO batches of 5** (*finish oldest 5 -> fetch next 5*).
+Autonomous, workspace-isolated background AI task runner (**`ISOLATED-TASK-WORKER`**) for processing open Rapider `WorkItem` (`"kind": "task"`, `"status": "open"`) requests in **FIFO batches of 5** (*finish oldest 5 -> fetch next 5*).
 
 ---
 
