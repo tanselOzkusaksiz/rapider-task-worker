@@ -75,3 +75,4 @@ No secrets are stored in `management-ui`. Configuration is read from environment
 - **[Root README (`../README.md`)](../README.md)** — Overview, quick start, `package.json` scripts reference, and full documentation index.
 - **[Isolated Task Orchestrator Guide (`../ISOLATED_TASK_ORCHESTRATOR_GUIDE.md`)](../ISOLATED_TASK_ORCHESTRATOR_GUIDE.md)** — Complete architecture, OS sandboxing (`sandbox-exec` & `bwrap`), capability proxy, 4-layer agent rules/hooks, and Ubuntu deployment guide.
 - **[Backend Admin API & S3 Logs (`../../rapider-server/documentation/task-orchestrator-admin-api.md`)](../../rapider-server/documentation/task-orchestrator-admin-api.md)** — LoopBack 4 models (`TaskOrchestratorState`, `TaskExecutionRecord`, `WorkItem.queueOrder`), admin REST endpoints, and private S3 storage paths.
+
