@@ -79,7 +79,7 @@ class IsolatedTaskOrchestrator {
     this.offline = Boolean(options.offline);
     this.taskTimeoutMs =
       Number(options.taskTimeoutMs || process.env.TASK_TIMEOUT_MS) ||
-      15 * 60 * 1000;
+      25 * 60 * 1000;
     this.pushRemoteBranches = Boolean(
       options.pushRemoteBranches ?? process.env.PUSH_TASK_BRANCHES === 'true'
     );

@@ -625,7 +625,11 @@ function buildProjectModelsContextMarkdownPure(models = []) {
     blocks.push('');
     blocks.push('Available Fields:');
 
-    const fields = Array.isArray(model.projectModelFields) ? model.projectModelFields : [];
+    const fields = Array.isArray(model.fields)
+      ? model.fields
+      : Array.isArray(model.projectModelFields)
+        ? model.projectModelFields
+        : [];
     if (fields.length === 0) {
       blocks.push('No custom fields defined.');
     } else {
@@ -639,9 +643,11 @@ function buildProjectModelsContextMarkdownPure(models = []) {
 
     blocks.push('');
     blocks.push('Available Relations:');
-    const relations = Array.isArray(model.projectModelRelations)
-      ? model.projectModelRelations
-      : [];
+    const relations = Array.isArray(model.relations)
+      ? model.relations
+      : Array.isArray(model.projectModelRelations)
+        ? model.projectModelRelations
+        : [];
     if (relations.length === 0) {
       blocks.push('No relations defined.');
     } else {
@@ -687,15 +693,21 @@ function buildProjectDataManagerGuideMarkdownPure({
             const entityTitle = String(m.title || m.name || m.dataTableName || '').replace(/\|/g, '\\|');
             const modelName = String(m.name || m.dataTableName || '').replace(/\|/g, '\\|');
             const tableName = String(m.dataTableName || m.name || '').replace(/\|/g, '\\|');
-            const fieldCount = Array.isArray(m.projectModelFields)
-              ? m.projectModelFields.length
-              : 0;
-            const relNames = Array.isArray(m.projectModelRelations)
-              ? m.projectModelRelations
-                  .map((r) => r.name || r.key)
-                  .filter(Boolean)
-                  .join(', ')
-              : '';
+            const modelFields = Array.isArray(m.fields)
+              ? m.fields
+              : Array.isArray(m.projectModelFields)
+                ? m.projectModelFields
+                : [];
+            const modelRelations = Array.isArray(m.relations)
+              ? m.relations
+              : Array.isArray(m.projectModelRelations)
+                ? m.projectModelRelations
+                : [];
+            const fieldCount = modelFields.length;
+            const relNames = modelRelations
+              .map((r) => r.name || r.key)
+              .filter(Boolean)
+              .join(', ');
             return `| **${entityTitle}** | \`${modelName}\` | \`${tableName}\` | ${fieldCount} field(s) | ${relNames ? `\`${relNames}\`` : '_None_'} |`;
           })
           .join('\n');
@@ -1811,29 +1823,101 @@ async function prepareWorkspaceRepository({
 
   const runAll = step === 'all';
 
-  // Step 2 & 3: Project Models Markdown + Project Data Manager Guide + Legacy JSON metadata
+  // Step 2 & 3: Project Models Markdown + Project Data Manager Guide + Compact JSON metadata
   if (runAll || step === 'models') {
     const modelsFilter = JSON.stringify({
+      fields: {
+        id: true,
+        name: true,
+        title: true,
+        dataTableName: true,
+        basePath: true,
+        description: true,
+        domainName: true,
+        domainKey: true,
+      },
       include: [
-        { relation: 'projectModelFields' },
-        { relation: 'projectModelRelations' },
+        { relation: 'fields' },
+        { relation: 'relations' },
       ],
     });
+    const fallbackModelsFilter = JSON.stringify({
+      fields: {
+        id: true,
+        name: true,
+        title: true,
+        dataTableName: true,
+        basePath: true,
+        description: true,
+        domainName: true,
+        domainKey: true,
+      },
+    });
 
-    const [aiModelsContextMd, modelsRaw, dataSchemasRaw, msgTemplatesRaw, tplDefsRaw] =
+    const [aiModelsContextMd, modelsRawPrimary, msgTemplatesRaw, tplDefsRaw] =
       await Promise.all([
         safeCall(() => api.getText('/project-models/model-descriptions-for-ai-context'), null),
         safeCall(
           () => api.getJson(`/project-models?filter=${encodeURIComponent(modelsFilter)}`),
-          []
+          null
         ),
-        runAll ? safeCall(() => api.getJson('/data-schemas'), []) : Promise.resolve([]),
         runAll ? safeCall(() => api.getJson('/message-templates'), []) : Promise.resolve([]),
         runAll ? safeCall(() => api.getJson('/template-definitions'), []) : Promise.resolve([]),
       ]);
 
+    const modelsRaw = Array.isArray(modelsRawPrimary)
+      ? modelsRawPrimary
+      : await safeCall(
+          () => api.getJson(`/project-models?filter=${encodeURIComponent(fallbackModelsFilter)}`),
+          []
+        );
+
+    const compactModel = (m) => {
+      if (!m || typeof m !== 'object') return m;
+      const rawFields = Array.isArray(m.fields)
+        ? m.fields
+        : Array.isArray(m.projectModelFields)
+          ? m.projectModelFields
+          : [];
+      const rawRels = Array.isArray(m.relations)
+        ? m.relations
+        : Array.isArray(m.projectModelRelations)
+          ? m.projectModelRelations
+          : [];
+      return {
+        id: m.id,
+        name: m.name,
+        title: m.title || m.name,
+        dataTableName: m.dataTableName || m.name,
+        ...(m.basePath ? { basePath: m.basePath } : {}),
+        ...(m.description ? { description: m.description } : {}),
+        ...(m.domainName ? { domainName: m.domainName } : {}),
+        ...(m.domainKey ? { domainKey: m.domainKey } : {}),
+        fields: rawFields.map((f) => ({
+          id: f.id,
+          name: f.name || f.key,
+          key: f.key || f.name,
+          title: f.title,
+          type: f.type,
+          isArray: Boolean(f.isArray),
+          ...(f.description ? { description: f.description } : {}),
+        })),
+        relations: rawRels.map((r) => ({
+          id: r.id,
+          name: r.name || r.key,
+          type: r.type,
+          ...(r.sourceFieldKey || r.foreignKey ? { sourceFieldKey: r.sourceFieldKey || r.foreignKey } : {}),
+          ...(r.targetFieldKey ? { targetFieldKey: r.targetFieldKey } : {}),
+          ...(r.targetModelName || r.referencedModelId
+            ? { targetModelName: r.targetModelName || r.referencedModelId }
+            : {}),
+          ...(r.description ? { description: r.description } : {}),
+        })),
+      };
+    };
+
     const modelsList = Array.isArray(modelsRaw)
-      ? redactSensitiveFields(modelsRaw)
+      ? redactSensitiveFields(modelsRaw.map(compactModel))
       : [];
     summary.modelsCount = modelsList.length;
 
@@ -1855,7 +1939,7 @@ async function prepareWorkspaceRepository({
       'utf8'
     );
 
-    // Maintain `models/project-models.json` for ScopedTaskProxy table allowlist + backwards compat
+    // Maintain compact `models/project-models.json` for ScopedTaskProxy table allowlist + fast lookup
     const modelsJsonDir = path.join(repoDir, 'models');
     fs.mkdirSync(modelsJsonDir, { recursive: true });
     fs.writeFileSync(
@@ -1865,13 +1949,7 @@ async function prepareWorkspaceRepository({
     );
 
     if (runAll) {
-      fs.mkdirSync(path.join(repoDir, 'schemas'), { recursive: true });
       fs.mkdirSync(path.join(repoDir, 'templates'), { recursive: true });
-      fs.writeFileSync(
-        path.join(repoDir, 'schemas/data-schemas.json'),
-        normalizeLf(JSON.stringify(redactSensitiveFields(dataSchemasRaw || []), null, 2)),
-        'utf8'
-      );
       fs.writeFileSync(
         path.join(repoDir, 'templates/message-templates.json'),
         normalizeLf(JSON.stringify(redactSensitiveFields(msgTemplatesRaw || []), null, 2)),

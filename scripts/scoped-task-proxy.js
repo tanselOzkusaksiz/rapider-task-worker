@@ -259,16 +259,47 @@ class ScopedTaskProxyServer {
 
       if (method === 'GET' && pathname === '/task-proxy/models') {
         const filter = JSON.stringify({
+          fields: {
+            id: true,
+            name: true,
+            title: true,
+            dataTableName: true,
+            basePath: true,
+            description: true,
+            domainName: true,
+            domainKey: true,
+          },
           include: [
-            { relation: 'projectModelFields' },
-            { relation: 'projectModelRelations' },
+            { relation: 'fields' },
+            { relation: 'relations' },
           ],
         });
-        const upstream = await this.upstreamFetch(
+        let upstream = await this.upstreamFetch(
           lease.projectId,
           `/project-models?filter=${encodeURIComponent(filter)}`
         );
-        return sendJson(res, upstream.status, upstream.data);
+        if (!upstream.ok) {
+          const fallbackFilter = JSON.stringify({
+            fields: {
+              id: true,
+              name: true,
+              title: true,
+              dataTableName: true,
+              basePath: true,
+              description: true,
+              domainName: true,
+              domainKey: true,
+            },
+          });
+          upstream = await this.upstreamFetch(
+            lease.projectId,
+            `/project-models?filter=${encodeURIComponent(fallbackFilter)}`
+          );
+        }
+        const cleaned = Array.isArray(upstream.data)
+          ? upstream.data.map(({ jsonSchema, renderedSchema, metadata, aiMetadataCaching, ...rest }) => rest)
+          : upstream.data;
+        return sendJson(res, upstream.status, cleaned);
       }
 
       // ─── DataSources & MCP / Integration Tools ───────────────────────────
