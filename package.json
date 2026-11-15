@@ -1,19 +1,32 @@
 {
   "name": "rapider-task-worker",
-  "version": "1.0.0",
-  "description": "Isolated autonomous background AI task worker (ISOLATED-TASK-WORKER) for processing open Rapider WorkItems (kind='task', status='open') in FIFO batches of 5.",
+  "version": "1.1.0",
+  "description": "Isolated Multi-Repo AI Task Orchestrator, Single-Workspace Worker & Standalone Admin Task Management UI for Rapider WorkItems (kind='task').",
   "private": true,
   "scripts": {
+    "orchestrator": "node scripts/isolated-task-orchestrator.js",
+    "orchestrator:once": "node scripts/isolated-task-orchestrator.js --once",
+    "orchestrator:offline": "node scripts/isolated-task-orchestrator.js --offline",
+    "orchestrator:once:offline": "node scripts/isolated-task-orchestrator.js --once --offline",
+    "ui": "node management-ui/server.js",
+    "ctl": "node scripts/rapider-task-ctl.js",
+    "ctl:status": "node scripts/rapider-task-ctl.js status",
+    "ctl:history": "node scripts/rapider-task-ctl.js history",
+    "ctl:pause": "node scripts/rapider-task-ctl.js pause",
+    "ctl:hard-pause": "node scripts/rapider-task-ctl.js hard-pause",
+    "ctl:resume": "node scripts/rapider-task-ctl.js resume",
+    "ctl:concurrency": "node scripts/rapider-task-ctl.js set-concurrency",
+    "ctl:pin-top": "node scripts/rapider-task-ctl.js pin-top",
+    "ctl:kill-task": "node scripts/rapider-task-ctl.js kill-task",
+    "ctl:requeue-top": "node scripts/rapider-task-ctl.js requeue-top",
+    "ctl:logs": "node scripts/rapider-task-ctl.js logs",
+    "ctl:cache-status": "node scripts/rapider-task-ctl.js cache-status",
     "fetch-tasks": "node scripts/fetch-and-validate-tasks.js --limit=5",
     "fetch-tasks:all": "node scripts/fetch-and-validate-tasks.js --all",
     "worker": "node scripts/task-worker-daemon.js",
     "worker:1m": "node scripts/task-worker-daemon.js --interval=1m",
     "worker:once": "node scripts/task-worker-daemon.js --once",
     "worker:headless": "node scripts/task-worker-daemon.js --headless",
-    "orchestrator": "node scripts/isolated-task-orchestrator.js",
-    "orchestrator:once": "node scripts/isolated-task-orchestrator.js --once",
-    "ctl": "node scripts/rapider-task-ctl.js",
-    "ui": "node management-ui/server.js",
     "status": "node scripts/manage-workspace-repos.js --status",
     "activate": "node scripts/manage-workspace-repos.js",
     "park:all": "node scripts/manage-workspace-repos.js --park-all",
@@ -21,7 +34,9 @@
     "upload-artifact": "node scripts/upload-task-artifacts.js",
     "patch-task": "node scripts/patch-workitem-task.js",
     "logs:sync": "node scripts/generate-iteration-logs.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:orchestrator": "node --test tests/isolated-orchestrator.test.js",
+    "ubuntu:setup": "bash deploy/ubuntu-setup.sh"
   },
   "dependencies": {
     "handlebars": "^4.7.8"
@@ -29,11 +44,12 @@
   "keywords": [
     "rapider",
     "task-worker",
+    "task-orchestrator",
     "workitems",
-    "isolated-workspace",
+    "isolated-sandbox",
+    "management-ui",
     "automation"
   ],
   "author": "Rapider AI",
   "license": "UNLICENSED"
 }
-
