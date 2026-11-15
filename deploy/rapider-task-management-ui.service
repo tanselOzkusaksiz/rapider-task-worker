@@ -1,0 +1,19 @@
+[Unit]
+Description=Rapider Standalone Admin Task Management & Monitoring UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rapider-worker
+Group=rapider-worker
+WorkingDirectory=/opt/rapider/rapider-task-worker/management-ui
+Environment=NODE_ENV=production
+Environment=MANAGEMENT_UI_PORT=4310
+ExecStart=/usr/bin/node /opt/rapider/rapider-task-worker/management-ui/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

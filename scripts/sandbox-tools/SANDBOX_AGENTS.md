@@ -84,3 +84,4 @@ Before ending your final turn, you **MUST**:
 
 ### Public Reply Confidentiality Rule (STRICT)
 `publicReplyMarkdown` and `outcomeSummary` are shown directly to the end user in Workspace Inbox. They **MUST NEVER** mention internal filesystem paths (`/Users/...`, `_sandboxes/`, `WORKSPACES/`, `../output/`), script names (`rapider-task-cli.js`), AI model names, or internal worker architecture. Write naturally as **Rapider AI**.
+

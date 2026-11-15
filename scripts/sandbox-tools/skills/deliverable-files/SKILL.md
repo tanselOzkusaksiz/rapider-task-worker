@@ -13,3 +13,4 @@ description: Standards for producing clean Markdown (.md), RFC-4180 UTF-8 BOM sp
 3. **Executive Markdown & PDF**:
    - Include an Executive Summary, Methodology/Data Sources section, Markdown summary tables, and clear caveats.
    - When a PDF or formal report is helpful or requested, run `node ../tools/rapider-task-cli.js render-pdf --in=../output/deliverables/<name>.md --out=../output/deliverables/<name>.pdf --title="<Report Title>"`.
+

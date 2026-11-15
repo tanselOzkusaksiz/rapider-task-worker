@@ -17,3 +17,4 @@ description: Executing safe, tenant-scoped Workspace API reads and updates throu
    - `/definitions` (GET)
 3. **Destructive Action Ban**:
    - `DELETE` requests and cross-workspace endpoints (`/admin/*`, `/users/*`, `/projects*`) are blocked by policy. Never attempt to bypass the capability proxy.
+

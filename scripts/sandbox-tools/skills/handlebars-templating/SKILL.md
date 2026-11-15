@@ -19,3 +19,4 @@ description: Authoring, sample-data compile verification, and Workspace persiste
      ```bash
      node ../tools/rapider-task-cli.js save-message-template --key=<slug> --subject="<Subject>" --file=../output/deliverables/<slug>.hbs
      ```
+

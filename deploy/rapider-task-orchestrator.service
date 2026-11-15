@@ -1,0 +1,22 @@
+[Unit]
+Description=Rapider Isolated Multi-Repo Task Orchestrator Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rapider-worker
+Group=rapider-worker
+WorkingDirectory=/opt/rapider/rapider-task-worker
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/rapider/rapider-task-worker/scripts/isolated-task-orchestrator.js
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=45
+NoNewPrivileges=false
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

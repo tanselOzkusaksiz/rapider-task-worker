@@ -14,3 +14,4 @@ description: Multi-model Workspace data aggregation, financial best/worst-case s
    - Clearly define assumptions for **Worst Case** (e.g., closed-won + committed recurring contracts) vs **Best Case** (e.g., closed-won + open pipeline weighted or unweighted + expansion/account income), showing both monthly/period breakdowns and grand totals.
 4. **Reconcile Totals**:
    - Compute aggregations via a deterministic Node script (`../output/compute.js`) rather than mental arithmetic so row counts, sums, and percentages are 100% exact.
+

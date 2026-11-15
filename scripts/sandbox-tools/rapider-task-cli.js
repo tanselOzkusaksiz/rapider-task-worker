@@ -382,3 +382,4 @@ main().catch((err) => {
   console.error(`[RapiderTaskCLI] Error: ${err.message}`);
   process.exit(1);
 });
+

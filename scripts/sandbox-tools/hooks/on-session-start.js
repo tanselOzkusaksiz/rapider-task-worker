@@ -56,3 +56,4 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({}));
   }
 });
+

@@ -31,6 +31,42 @@ Every queued task in each batch of 5 passes through five mandatory gates:
 
 ---
 
+## Isolated Multi-Repo Orchestrator & Standalone Admin Management UI
+
+In addition to single-worker mode, `rapider-task-worker` includes the **Isolated Multi-Repo Task Orchestrator** (`scripts/isolated-task-orchestrator.js`) and **Standalone Admin Task Management & Monitoring UI** (`management-ui/`):
+
+### Key Capabilities
+- **Dynamic Live Concurrency (`MAX_CONCURRENT = 1..100`, default `5`)**: Stored in Rapider MongoDB (`TaskOrchestratorState`) and adjustable live from the Management UI or `rapider-task-ctl.js` without restarting workers.
+- **Non-Destructive Multi-Repo Staging + 100% Repo Blindness**:
+  - Persistent repos (`WORKSPACES/*`, `rapider-apps/APPS/*`, `_repo-cache/*.git`) remain permanently on disk parked on their orphan `idle` branch and are **never deleted**.
+  - Each claimed task is staged into `_sandboxes/task-<id>/workspace/` via `git archive <baseSha> | tar -x` -> single-commit `ORCH_BASELINE` local git repo (**zero remotes, zero prior commits, zero other branches, zero uninstalled apps**).
+  - Enforced at the OS kernel level on **macOS (`darwin` via `/usr/bin/sandbox-exec`)** and **Ubuntu Linux (`linux` via `bwrap`)**, paired with a `127.0.0.1` ephemeral-nonce capability proxy (`scripts/scoped-task-proxy.js`) so `agy` never sees `.env` files, DB URIs, or JWTs.
+- **4-Layer Agent Rules, Skills & Hooks**: Every sandbox receives `/workspace/AGENTS.md` (`< 12 KB`), `TASK_BRIEF.md` with an auto-discovered **Mounted Repo & Docs Index**, modular `.agents/skills/*/SKILL.md` playbooks, and `.agents/hooks.json` (`SessionStart` + `Stop` confidentiality/deliverable verification gate).
+- **Private S3 Logs via `s3-file.service.ts`**: Uploads `.log`, `stream-json` `.jsonl` trajectories, and git `.patch` diffs privately (`isPublic = false`) to DigitalOcean Spaces (with automatic offline `/_offline-spaces` fallback).
+
+### Quick Start (Local macOS & Ubuntu Linux)
+
+```bash
+# 1. Start the Isolated Multi-Repo Task Orchestrator Daemon
+cd rapider-task-worker
+npm run orchestrator
+
+# 2. Start the Standalone Admin Management & Monitoring UI (http://localhost:4310)
+npm run ui
+
+# 3. Operator CLI Controls
+npm run ctl -- status
+npm run ctl -- set-concurrency 8
+npm run ctl -- pause
+npm run ctl -- resume
+npm run ctl -- pin-top <workItemId>
+npm run ctl -- logs <workItemId> --type=log
+```
+
+For Ubuntu 22.04 / 24.04 LTS server provisioning (`bwrap` + `systemd` units), see `deploy/ubuntu-setup.sh`, `deploy/rapider-task-orchestrator.service`, and `deploy/rapider-task-management-ui.service`.
+
+---
+
 ## Documentation & Rules Index
 
 - **[AGENTS.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/AGENTS.md)** — Mandatory agent rules, zero-tolerance security/secrets policy, guardrail matrix, capability standards, and public reply confidentiality rules.

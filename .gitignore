@@ -8,6 +8,8 @@ node_modules/
 
 # Isolated Tenant Workspace Clones & Runtime Queues
 WORKSPACES/
+_sandboxes/
+_repo-cache/
 tasks-queue.json
 _artifacts/
 _process-logs/task-attachments/

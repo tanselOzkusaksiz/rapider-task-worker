@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rapider Isolated Task Orchestrator — Admin Console</title>
+  <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/vendor/tailwindcss/browser-4.js"></script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm"></div>
+
+  <!-- ===================================================================== -->
+  <!-- 1. LOGIN & ADMIN GATE VIEW                                            -->
+  <!-- ===================================================================== -->
+  <section id="authView" class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-lg p-8">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-11 h-11 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm" style="color: #ffffff !important;">
+          <i class="fas fa-microchip text-lg"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-slate-900 leading-tight">Task Orchestrator Console</h1>
+          <p class="text-xs text-slate-500">Rapider Isolated Multi-Repo Worker Control Plane</p>
+        </div>
+      </div>
+
+      <div id="authForbiddenBanner" class="hidden mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+        <div class="font-semibold flex items-center gap-1.5 mb-1">
+          <i class="fas fa-shield-alt text-red-600"></i>
+          Admin Permission Scope Required (403)
+        </div>
+        <p id="authForbiddenMessage">
+          Your Rapider account signed in successfully, but does not hold the required <code>admin</code> permission scope to access Task Orchestrator monitoring or controls.
+        </p>
+      </div>
+
+      <div id="authErrorBanner" class="hidden mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900"></div>
+
+      <form id="loginForm" class="space-y-4">
+        <div>
+          <label for="loginEmail" class="block text-xs font-semibold text-slate-700 mb-1">Rapider Email / Username</label>
+          <input
+            id="loginEmail"
+            type="email"
+            required
+            autocomplete="username"
+            placeholder="you@company.com"
+            class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm focus:border-blue-600 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label for="loginPassword" class="block text-xs font-semibold text-slate-700 mb-1">Password</label>
+          <input
+            id="loginPassword"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="••••••••••••"
+            class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm focus:border-blue-600 focus:outline-none"
+          />
+        </div>
+        <button
+          id="loginSubmitBtn"
+          type="submit"
+          class="btn-primary-strict w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold !text-white text-white shadow-sm transition cursor-pointer"
+          style="color: #ffffff !important;"
+        >
+          <i class="fas fa-lock mr-1.5"></i> Sign In with Rapider Admin
+        </button>
+      </form>
+
+      <p class="mt-5 text-[11px] text-slate-400 text-center">
+        Authenticates directly against your Rapider MongoDB user store. Restricted strictly to <code>admin</code> scope.
+      </p>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <!-- 2. MAIN ADMIN DASHBOARD VIEW                                          -->
+  <!-- ===================================================================== -->
+  <div id="dashboardView" class="hidden min-h-screen flex flex-col">
+
+    <!-- Top Control Header -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center !text-white text-white" style="color: #ffffff !important;">
+            <i class="fas fa-server text-sm"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-bold text-sm sm:text-base text-slate-900">Rapider Task Orchestrator</span>
+              <span id="globalStateBadge" class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800">
+                RUNNING
+              </span>
+            </div>
+            <p class="text-xs text-slate-500">
+              Signed in as <span id="adminIdentityLabel" class="font-medium text-slate-700">Admin</span>
+              <span class="mx-1">•</span>
+              <span id="lastSyncedLabel">Synced just now</span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Live Concurrency & Global Controls -->
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- Active Slot Gauge -->
+          <div class="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
+            <span class="text-slate-500 font-medium">Slots:</span>
+            <span id="slotGaugeText" class="font-bold text-slate-900">0 / 5</span>
+            <span class="text-slate-300">|</span>
+            <span class="text-slate-500">Queued:</span>
+            <span id="queuedCountText" class="font-bold text-blue-700">0</span>
+          </div>
+
+          <!-- Live MAX_CONCURRENT Control -->
+          <div class="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs">
+            <label for="maxConcurrentInput" class="font-semibold text-slate-600" title="Live maximum concurrent isolated tasks">
+              MAX_CONCURRENT:
+            </label>
+            <input
+              id="maxConcurrentInput"
+              type="number"
+              min="1"
+              max="100"
+              value="5"
+              class="w-14 rounded border border-slate-300 px-2 py-1 text-center font-bold text-slate-900 focus:border-blue-600 focus:outline-none"
+            />
+            <button
+              id="applyConcurrencyBtn"
+              type="button"
+              class="btn-primary-strict rounded bg-blue-600 px-2.5 py-1 text-xs font-semibold !text-white text-white cursor-pointer"
+              style="color: #ffffff !important;"
+            >
+              Apply
+            </button>
+          </div>
+
+          <!-- Pause / Resume / Hard Pause -->
+          <button
+            id="togglePauseBtn"
+            type="button"
+            class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 cursor-pointer"
+          >
+            <i class="fas fa-pause mr-1"></i>Pause
+          </button>
+
+          <button
+            id="hardPauseBtn"
+            type="button"
+            title="Stop claiming and terminate all active sandboxed PGIDs immediately"
+            class="btn-danger-strict rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold !text-white text-white cursor-pointer"
+            style="color: #ffffff !important;"
+          >
+            <i class="fas fa-bolt mr-1"></i>Hard Stop
+          </button>
+
+          <!-- + New Task -->
+          <button
+            id="openNewTaskModalBtn"
+            type="button"
+            class="btn-primary-strict rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold !text-white text-white shadow-sm cursor-pointer"
+            style="color: #ffffff !important;"
+          >
+            <i class="fas fa-plus mr-1"></i>New Task
+          </button>
+
+          <button
+            id="manualRefreshBtn"
+            type="button"
+            title="Refresh now"
+            class="rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600 cursor-pointer"
+          >
+            <i class="fas fa-sync-alt"></i>
+          </button>
+
+          <button
+            id="logoutBtn"
+            type="button"
+            title="Sign out"
+            class="rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600 cursor-pointer"
+          >
+            <i class="fas fa-sign-out-alt"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Connected Worker Nodes Strip & Separated Tabs -->
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 pt-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100">
+        <div class="flex items-center gap-1" role="tablist">
+          <button
+            id="tabBtnQueue"
+            type="button"
+            data-tab="queue"
+            class="px-4 py-2.5 text-xs sm:text-sm font-semibold border-b-2 border-blue-600 text-blue-600 cursor-pointer"
+          >
+            <i class="fas fa-stream mr-1.5"></i>Active &amp; Queue (Next 20)
+          </button>
+          <button
+            id="tabBtnHistory"
+            type="button"
+            data-tab="history"
+            class="px-4 py-2.5 text-xs sm:text-sm font-semibold border-b-2 border-transparent text-slate-500 hover:text-slate-800 cursor-pointer"
+          >
+            <i class="fas fa-history mr-1.5"></i>Past History (Last 20)
+          </button>
+        </div>
+
+        <div id="workersStrip" class="flex flex-wrap items-center gap-2 py-1.5 text-xs"></div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Body -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+      <!-- ================================================================= -->
+      <!-- TAB 1: CURRENTLY IN-PROGRESS + NEXT 20 QUEUE                      -->
+      <!-- ================================================================= -->
+      <div id="tabPanelQueue" class="space-y-6">
+
+        <!-- In-Progress Tasks Section -->
+        <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <h2 class="text-sm font-bold text-slate-900">Currently In-Progress Tasks</h2>
+              <span id="activeTasksBadge" class="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">0</span>
+            </div>
+            <span class="text-[11px] text-slate-400">Auto-refreshes every 5s</span>
+          </div>
+          <div id="activeTasksContainer" class="p-5"></div>
+        </section>
+
+        <!-- Next 20 Queue Section -->
+        <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-bold text-slate-900">
+                Next 20 Queued Tasks
+                <span class="ml-1 text-xs font-normal text-slate-500">(Drag rows to reorder or click Pin #1)</span>
+              </h2>
+            </div>
+            <div class="relative w-full sm:w-72">
+              <i class="fas fa-search absolute left-3 top-2.5 text-xs text-slate-400"></i>
+              <input
+                id="queueSearchInput"
+                type="text"
+                placeholder="Search queued tasks or Workspace..."
+                class="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs focus:border-blue-600 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <!-- Active Filter Tags Bar (AGENTS.md Standard) -->
+          <div id="activeFilterTagsBar" class="hidden px-5 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-2"></div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  <th class="py-2.5 px-4 w-20">Rank</th>
+                  <th class="py-2.5 px-4">Task Title &amp; Summary</th>
+                  <th class="py-2.5 px-4 w-48">Workspace</th>
+                  <th class="py-2.5 px-4 w-28">Status</th>
+                  <th class="py-2.5 px-4 w-40">Queued At</th>
+                  <th class="py-2.5 px-4 w-52 text-right">Queue Controls</th>
+                </tr>
+              </thead>
+              <tbody id="queueTableBody" class="divide-y divide-slate-100 text-xs"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- TAB 2: PAST HISTORY (LAST 20 FINISHED TASKS)                      -->
+      <!-- ================================================================= -->
+      <div id="tabPanelHistory" class="hidden space-y-4">
+        <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-bold text-slate-900">Last 20 Past Tasks (Execution History &amp; Private S3 Logs)</h2>
+              <p class="text-xs text-slate-500">Inspect S3 <code>.log</code>, <code>.jsonl</code> trajectories, git <code>.patch</code> diffs, or re-queue any task at Rank #1.</p>
+            </div>
+            <div class="relative w-full sm:w-72">
+              <i class="fas fa-search absolute left-3 top-2.5 text-xs text-slate-400"></i>
+              <input
+                id="historySearchInput"
+                type="text"
+                placeholder="Filter history by title, status, Workspace..."
+                class="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs focus:border-blue-600 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div id="historyFilterTagsBar" class="hidden px-5 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-2"></div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  <th class="py-2.5 px-4">Task &amp; Outcome</th>
+                  <th class="py-2.5 px-4 w-44">Workspace</th>
+                  <th class="py-2.5 px-4 w-28">Status</th>
+                  <th class="py-2.5 px-4 w-36">Deliverables / Git</th>
+                  <th class="py-2.5 px-4 w-36">Finished</th>
+                  <th class="py-2.5 px-4 w-56 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody" class="divide-y divide-slate-100 text-xs"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 3. + NEW TASK MODAL                                                   -->
+  <!-- ===================================================================== -->
+  <div id="newTaskModal" class="hidden fixed inset-0 z-40 bg-slate-900/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-lg overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <h3 class="text-base font-bold text-slate-900">Enqueue Isolated Background Task</h3>
+        <button id="closeNewTaskModalBtn" type="button" class="text-slate-400 hover:text-slate-700 cursor-pointer" aria-label="Close">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <form id="newTaskForm" class="p-6 space-y-4">
+        <div>
+          <label for="newTaskWorkspace" class="block text-xs font-semibold text-slate-700 mb-1">Target Workspace *</label>
+          <select
+            id="newTaskWorkspace"
+            required
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:border-blue-600 focus:outline-none"
+          ></select>
+        </div>
+        <div>
+          <label for="newTaskTitle" class="block text-xs font-semibold text-slate-700 mb-1">Task Title *</label>
+          <input
+            id="newTaskTitle"
+            type="text"
+            required
+            placeholder="e.g., 12-Month Best & Worst Case Pipeline Income Report"
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-600 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label for="newTaskBody" class="block text-xs font-semibold text-slate-700 mb-1">Detailed Instructions (Markdown)</label>
+          <textarea
+            id="newTaskBody"
+            rows="4"
+            placeholder="Describe the data models, deliverables (.md, .csv, .pdf, .hbs), or microapplication updates required..."
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-600 focus:outline-none"
+          ></textarea>
+        </div>
+        <label class="flex items-center gap-2.5 rounded-xl border border-blue-200 bg-blue-50/70 p-3 cursor-pointer">
+          <input id="newTaskPinTop" type="checkbox" checked class="rounded border-slate-300 text-blue-600" />
+          <div>
+            <div class="text-xs font-bold text-blue-900">Pin to Top of Queue (#1)</div>
+            <div class="text-[11px] text-blue-700">Executes ahead of all existing queued tasks as soon as a worker slot opens.</div>
+          </div>
+        </label>
+        <div class="pt-2 flex items-center justify-end gap-2">
+          <button
+            id="cancelNewTaskBtn"
+            type="button"
+            class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            id="submitNewTaskBtn"
+            type="submit"
+            class="btn-primary-strict rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold !text-white text-white cursor-pointer"
+            style="color: #ffffff !important;"
+          >
+            <i class="fas fa-paper-plane mr-1"></i>Enqueue Task
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 4. SLIDE-OVER S3 LOG / JSONL / GIT PATCH INSPECTOR DRAWER             -->
+  <!-- ===================================================================== -->
+  <div id="logDrawerBackdrop" class="hidden fixed inset-0 z-40 bg-slate-900/50 flex justify-end">
+    <div class="bg-white w-full max-w-3xl h-full shadow-2xl flex flex-col border-l border-slate-200">
+      <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <h3 id="logDrawerTitle" class="text-sm font-bold text-slate-900 truncate">Task Execution Logs</h3>
+          <p id="logDrawerSubtitle" class="text-xs text-slate-500 truncate"></p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            id="refreshLogBtn"
+            type="button"
+            class="rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 cursor-pointer"
+          >
+            <i class="fas fa-sync-alt mr-1"></i>Refresh
+          </button>
+          <button
+            id="closeLogDrawerBtn"
+            type="button"
+            class="rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600 cursor-pointer"
+            aria-label="Close Log Viewer"
+          >
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="px-5 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-1.5">
+        <button type="button" data-log-type="log" class="log-tab-btn px-3 py-1 rounded-md text-xs font-semibold bg-blue-600 !text-white text-white cursor-pointer" style="color: #ffffff !important;">
+          Execution .log (S3)
+        </button>
+        <button type="button" data-log-type="jsonl" class="log-tab-btn px-3 py-1 rounded-md text-xs font-semibold bg-white border border-slate-200 text-slate-700 cursor-pointer">
+          Stream-JSON .jsonl (S3)
+        </button>
+        <button type="button" data-log-type="patch" class="log-tab-btn px-3 py-1 rounded-md text-xs font-semibold bg-white border border-slate-200 text-slate-700 cursor-pointer">
+          Git .patch Diff (S3)
+        </button>
+        <button type="button" data-log-type="tail" class="log-tab-btn px-3 py-1 rounded-md text-xs font-semibold bg-white border border-slate-200 text-slate-700 cursor-pointer">
+          Live Tail (MongoDB)
+        </button>
+        <span id="logSourceBadge" class="ml-auto text-[11px] font-mono text-slate-500"></span>
+      </div>
+
+      <pre id="logContentPre" class="terminal-pre flex-1 p-5 overflow-auto whitespace-pre-wrap break-words m-0">Loading...</pre>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
+
