@@ -110,7 +110,10 @@ function discoverRepoDocs(rootDir, mountRelPrefix, maxDepth = 4) {
     if (depth > maxDepth || !fs.existsSync(currDir)) return;
     const entries = fs.readdirSync(currDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === '.agents') {
+      if (entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+      if (relDir === '.agents' && (entry.name === 'skills' || entry.name === 'hooks')) {
         continue;
       }
       const nextCurr = path.join(currDir, entry.name);
@@ -363,9 +366,11 @@ async function stageTaskSandbox({
   events = [],
   sandboxesRoot = DEFAULT_SANDBOXES_ROOT,
   workspacesRoot,
+  codeGenReposRoot,
   appsCloneRoot,
   bareCacheRoot,
   offline = false,
+  customApiClient = null,
 }) {
   if (!workItem || !workItem.id || !workItem.projectId) {
     throw new Error('stageTaskSandbox requires workItem with id and projectId.');
@@ -389,10 +394,14 @@ async function stageTaskSandbox({
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // 1. Prepare Workspace snapshot commit on host (immediately re-parks host repo to `idle`!)
+  // 1. Prepare Workspace git repo on task branch (or `main`), overwrite models/datasources/notebooks/envs,
+  //    commit onto branch, and immediately re-park host repo to `idle`!
   const wsPrep = await prepareWorkspaceSnapshotCommit(workItem.projectId, {
+    workItem,
     workspacesRoot,
+    codeGenReposRoot,
     offline,
+    customApiClient,
   });
 
   const stagedRepos = [];
@@ -403,15 +412,16 @@ async function stageTaskSandbox({
     wsPrep.repoDir,
     wsPrep.mainSha,
     wsContextMount,
-    `workspace:${workItem.projectId}`
+    `workspace:${wsPrep.repoName || workItem.projectId}@${wsPrep.branch || 'main'}`
   );
   stagedRepos.push({
     mountRelPath: 'workspace-context',
-    repoKey: `workspace-${workItem.projectId}`,
+    repoKey: wsPrep.repoName || `workspace-${workItem.projectId}`,
+    targetBranch: wsPrep.branch || 'main',
     hostRepoDir: wsPrep.repoDir,
     baseSha: wsPrep.mainSha,
     baselineHead: wsBaseline.baselineHead,
-    readOnlySnapshot: true,
+    readOnlySnapshot: false,
     discoveredDocs: discoverRepoDocs(wsContextMount, 'workspace-context'),
   });
 
@@ -468,6 +478,21 @@ async function stageTaskSandbox({
 
   // 5. Install 4-layer AGENTS.md, modular skills, hooks, and rapider-task-cli.js
   installAgentRulesSkillsAndHooks(workspaceDir, toolsDir);
+
+  // 5b. Mirror prepared Workspace `.agents/*.md` into sandbox root `.agents/` for instant root lookup
+  const wsAgentsSrc = path.join(wsContextMount, '.agents');
+  if (fs.existsSync(wsAgentsSrc)) {
+    for (const mdFile of [
+      'project-data-models.md',
+      'project-data-manager-guide.md',
+      'workspace-datasources-and-integrations.md',
+    ]) {
+      const srcFile = path.join(wsAgentsSrc, mdFile);
+      if (fs.existsSync(srcFile)) {
+        fs.copyFileSync(srcFile, path.join(workspaceDir, '.agents', mdFile));
+      }
+    }
+  }
 
   // 6. Write TASK_BRIEF.md with auto-discovered Mounted Repo & Docs Index
   const workspaceName =

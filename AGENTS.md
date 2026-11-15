@@ -3,6 +3,8 @@
 This file defines the **non-negotiable operating rules, security guardrails, isolation boundaries, and quality standards** for any AI agent or automated runner operating inside `rapider-task-worker` (**`ISOLATED-TASK-WORKER`**).
 
 For the full lifecycle architecture, REST API schemas, and CLI tooling reference, read:
+- [WORKSPACE_REPO_PREPARATION.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/WORKSPACE_REPO_PREPARATION.md)
+- [ISOLATED_TASK_ORCHESTRATOR_GUIDE.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/ISOLATED_TASK_ORCHESTRATOR_GUIDE.md)
 - [TASK_WORKER_AUTOMATION_GUIDE.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/TASK_WORKER_AUTOMATION_GUIDE.md)
 - [TASK_WORKER_AUTOMATION_CRON_JOB.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/TASK_WORKER_AUTOMATION_CRON_JOB.md)
 
@@ -58,10 +60,16 @@ Your **sole permitted capabilities** are workspace-scoped operations anchored to
 
 Every single `WorkItem` (`kind: "task"`) in the oldest-5 batch **MUST** pass through these 5 sequential stages without skipping any gate:
 
-### Step 1 — Switch to the Target Workspace Repository
+### Step 1 — Switch to & Deterministically Prepare the Target Workspace Repository
 1. Claim the `WorkItem` (`PATCH /work-items/{id}` with `status: "running"`, `needsAttention: false`, `revision: currentRevision + 1`) and log `WorkItemEvent` (`eventType: "task_started"`).
 2. Acquire a token scoped strictly to `workItem.projectId`.
-3. Activate `WORKSPACES/<projectId>/` (`node scripts/manage-workspace-repos.js --activate=<projectId>`), parking every other workspace repository onto `idle` first and pulling the latest workspace repo state (`models/`, `schemas/`, `templates/`, `apps/`, `docs/`, `mcp/`).
+3. Prepare and activate the Workspace repository (`node scripts/prepare-workspace-repo.js --project=<projectId> [--branch=<taskBranch>]` or `node scripts/manage-workspace-repos.js --activate=<projectId>`), which deterministically:
+   - Resolves the Workspace's GitHub repository (`GitInfo.repoName`), checks out the branch specified in the task (or `main` if none specified), and runs `git pull` when a remote exists.
+   - Fetches `GET /project-models/model-descriptions-for-ai-context` and overwrites `<repo root>/.agents/project-data-models.md`.
+   - Generates `<repo root>/.agents/project-data-manager-guide.md` (`Entity -> dataTableName` lookup + full `/project-data-manager/{dataTableName}` CRUD guide) and updates `<repo root>/AGENTS.md`.
+   - Generates `<repo root>/.agents/workspace-datasources-and-integrations.md` (Jira, Slack, Google Drive, MCP servers, OpenAPI endpoints, and tool schemas).
+   - Syncs all Workspace Notebooks & Knowledge Spaces (MongoDB metadata + DigitalOcean Spaces S3 Markdown content) into `<repo root>/_notebooks/` preserving full hierarchy.
+   - Generates `<repo root>/dev.env`, `<repo root>/stage.env`, and `<repo root>/prod.env` from Workspace `ProjectSetting` + `EnvironmentVariable` records, and commits all refreshed files onto the branch before the task executes.
 
 ### Step 2 — Analyze Request & Enforce Guardrail Rejection (MANDATORY PRE-EXECUTION GATE)
 Inspect `workItem.title`, `workItem.bodyMarkdown`, `workItem.source.exactUserRequest`, `workItem.facts`, attached files, and all chronological `WorkItemEvent` replies (`order: ['sequence ASC', 'createdDate ASC']`).
@@ -79,9 +87,10 @@ Only after passing Step 2:
 1. **Mandatory Attachment & Image Inspection Gate:**
    - Download all `workItem.source.attachmentFileIds`, `workItem.contextRefs`, and any S3/DigitalOcean Spaces image URLs referenced in the task or its `WorkItemEvent` replies into `_process-logs/task-attachments/<workItemId>/`.
    - Visually/textually read every attached image, PDF, CSV, or Markdown file via `read_file` **before** planning queries or outputs. Never resolve a task that includes attachments/images without inspecting them first.
-2. **Repo-First Discovery:**
-   - Read the workspace repository's `ProjectModel` definitions, `DataSchema`s, relationship foreign keys, enum constraints, existing Handlebars templates, and workspace documentation in `WORKSPACES/<projectId>/` (cross-checked via `GET /project-models`, `GET /data-schemas`, `GET /template-definitions`, `GET /message-templates` when needed).
-   - Inspect available Workspace DataSources, OpenAPI endpoints, and MCP tool schemas (`DataSource` / `ToolGatewayService` definitions) documented or configured for this workspace.
+2. **Repo-First Discovery (Prepared Workspace Context Files):**
+   - Read `<repo root>/.agents/project-data-models.md` for all Workspace entities, fields, types, and relationships, and `<repo root>/.agents/project-data-manager-guide.md` for the exact `Entity -> dataTableName` mapping and `/project-data-manager/{dataTableName}` query/create/update operations.
+   - Read `<repo root>/.agents/workspace-datasources-and-integrations.md` for all configured external integrations (e.g., Jira, Slack, Google Drive), MCP servers, and OpenAPI tools along with their JSON input schemas.
+   - Read `<repo root>/_notebooks/INDEX.md` (and relevant pages under `<repo root>/_notebooks/`) for Workspace domain rules, procedures, and notebooks, plus `<repo root>/dev.env`, `stage.env`, `prod.env` when Workspace settings or environment keys are needed (never echo secret values from `*.env` into user-facing replies).
 3. **Ambiguity / Missing Input Check:**
    - Verify that all required tables, fields, date windows, business formulas, or target API parameters are either deterministically derivable from the workspace repo/data or specified by the user.
    - If critical business rules or missing parameters block accurate execution (e.g., an empty required table, an ambiguous custom formula with multiple conflicting interpretations, or a missing target template key for an overwrite), **do NOT guess or fabricate** — transition to **Clarification Needed (`status: "pending"`, `needsAttention: true`)** in Step 5 with a concise, targeted question.

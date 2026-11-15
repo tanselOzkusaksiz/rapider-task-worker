@@ -32,6 +32,10 @@ const {
   fetchWithRetry,
 } = require('./rapider-api-auth');
 const { redactSensitiveFields } = require('./security-and-scope-guardrail');
+const {
+  prepareWorkspaceRepository,
+  extractTaskTargetBranch,
+} = require('./prepare-workspace-repo');
 
 const WORKER_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_WORKSPACES_ROOT = path.resolve(WORKER_ROOT, 'WORKSPACES');
@@ -131,11 +135,22 @@ function ensureGitRepoAndIdleBranch(repoDir, projectId, workspaceName = '') {
 /**
  * Parks a single Workspace repository onto its orphan `idle` branch and cleans
  * untracked snapshot artifacts so zero schema/data files linger at rest.
+ * Supports both `<workspacesRoot>/<projectId>` and `<workspacesRoot>/<repoName>--<projectId>`.
  */
 function parkWorkspaceRepo(projectId, options = {}) {
   const workspacesRoot = options.workspacesRoot || DEFAULT_WORKSPACES_ROOT;
   const safeId = sanitizeFolderSegment(projectId);
-  const repoDir = path.join(workspacesRoot, safeId);
+  let repoDir = path.join(workspacesRoot, safeId);
+
+  if (!fs.existsSync(path.join(repoDir, '.git')) && fs.existsSync(workspacesRoot)) {
+    const suffix = `--${safeId}`;
+    const match = fs
+      .readdirSync(workspacesRoot, { withFileTypes: true })
+      .find((d) => d.isDirectory() && d.name.endsWith(suffix));
+    if (match) {
+      repoDir = path.join(workspacesRoot, match.name);
+    }
+  }
 
   if (!fs.existsSync(repoDir) || !fs.existsSync(path.join(repoDir, '.git'))) {
     return { projectId: safeId, parked: false, reason: 'Not cloned' };
@@ -145,7 +160,6 @@ function parkWorkspaceRepo(projectId, options = {}) {
 
   const branch = getCurrentBranch(repoDir);
   if (branch !== 'idle') {
-    // Commit any snapshot updates on local main before switching to idle so main stays clean
     const dirty = git(repoDir, ['status', '--porcelain']);
     if (dirty) {
       git(repoDir, ['add', '-A']);
@@ -157,7 +171,7 @@ function parkWorkspaceRepo(projectId, options = {}) {
     git(repoDir, ['clean', '-fd']);
   }
 
-  return { projectId: safeId, parked: true, branch: 'idle' };
+  return { projectId: safeId, repoDir, parked: true, branch: 'idle' };
 }
 
 /**
@@ -349,54 +363,52 @@ async function syncWorkspaceMetadataSnapshot(repoDir, projectId) {
 }
 
 /**
- * Activates `WORKSPACES/<projectId>/` on `main` after parking all other workspaces to `idle`.
+ * Activates the Workspace git repo (`WORKSPACES/<repoName>` or `WORKSPACES/<projectId>`)
+ * on the task's target branch (or `main` if none specified), pulls latest from remote,
+ * prepares `.agents/*.md`, `_notebooks/`, `dev.env`, `stage.env`, `prod.env`, `AGENTS.md`,
+ * and commits refreshed Workspace data after parking all other workspaces to `idle`.
  */
 async function activateWorkspaceRepo(projectId, options = {}) {
   const workspacesRoot = options.workspacesRoot || DEFAULT_WORKSPACES_ROOT;
   const offline = Boolean(options.offline);
   const safeId = sanitizeFolderSegment(projectId);
+  const targetBranch = options.targetBranch || extractTaskTargetBranch(options.workItem);
 
   fs.mkdirSync(workspacesRoot, { recursive: true });
 
   // 1. Park every other workspace repo to `idle` first
   const existingDirs = fs
     .readdirSync(workspacesRoot, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name !== safeId);
+    .filter(
+      (d) =>
+        d.isDirectory() &&
+        d.name !== safeId &&
+        !d.name.endsWith(`--${safeId}`)
+    );
 
   for (const dir of existingDirs) {
     parkWorkspaceRepo(dir.name, { workspacesRoot });
   }
 
-  // 2. Ensure target repo exists & checkout `main`
-  const repoDir = path.join(workspacesRoot, safeId);
-  ensureGitRepoAndIdleBranch(repoDir, safeId);
-
-  const currentBranch = getCurrentBranch(repoDir);
-  if (currentBranch !== 'main') {
-    if (refExists(repoDir, 'refs/heads/main')) {
-      git(repoDir, ['checkout', '-f', 'main']);
-    } else {
-      git(repoDir, ['checkout', '-b', 'main']);
-    }
-  }
-
-  let syncSummary = null;
-  if (!offline) {
-    syncSummary = await syncWorkspaceMetadataSnapshot(repoDir, safeId);
-    const dirty = git(repoDir, ['status', '--porcelain']);
-    if (dirty) {
-      git(repoDir, ['add', '-A']);
-      try {
-        git(repoDir, ['commit', '--no-gpg-sign', '-m', `chore(snapshot): sync workspace ${safeId} context`]);
-      } catch (_) {}
-    }
-  }
+  // 2. Run full deterministic Workspace repo preparation & commit on targetBranch
+  const prepSummary = await prepareWorkspaceRepository({
+    projectId: safeId,
+    workItem: options.workItem || null,
+    targetBranch,
+    workspacesRoot,
+    codeGenReposRoot: options.codeGenReposRoot,
+    offline,
+    parkAfterCommit: false,
+    customApiClient: options.customApiClient || null,
+  });
 
   return {
     projectId: safeId,
-    repoDir,
-    branch: 'main',
-    syncSummary,
+    repoName: prepSummary.repoName,
+    repoDir: prepSummary.repoDir,
+    branch: prepSummary.branch,
+    headSha: prepSummary.headSha,
+    syncSummary: prepSummary,
   };
 }
 
@@ -444,54 +456,64 @@ async function withWorkspaceLock(projectId, fn) {
 }
 
 /**
- * Updates `WORKSPACES/<projectId>` on `main` (if online), captures the exact `main`
- * commit SHA, and immediately parks `WORKSPACES/<projectId>` back onto `idle` so
- * master repos NEVER remain exposed on disk during parallel execution.
+ * Prepares the Workspace repository on `targetBranch` (or `main` when unspecified),
+ * pulls remote latest, overwrites `.agents/*.md`, `_notebooks/`, `dev.env`, `stage.env`,
+ * `prod.env`, and `AGENTS.md`, commits onto `targetBranch`, captures `headSha`, and
+ * immediately parks the host repository back onto `idle` so master repos NEVER remain
+ * exposed on disk during parallel execution.
  */
 async function prepareWorkspaceSnapshotCommit(projectId, options = {}) {
   const workspacesRoot = options.workspacesRoot || DEFAULT_WORKSPACES_ROOT;
   const offline = Boolean(options.offline);
   const safeId = sanitizeFolderSegment(projectId);
+  const targetBranch = options.targetBranch || extractTaskTargetBranch(options.workItem);
 
   return withWorkspaceLock(safeId, async () => {
-    fs.mkdirSync(workspacesRoot, { recursive: true });
-    const repoDir = path.join(workspacesRoot, safeId);
-    ensureGitRepoAndIdleBranch(repoDir, safeId);
+    try {
+      const prepSummary = await prepareWorkspaceRepository({
+        projectId: safeId,
+        workItem: options.workItem || null,
+        targetBranch,
+        workspacesRoot,
+        codeGenReposRoot: options.codeGenReposRoot,
+        offline,
+        parkAfterCommit: true,
+        customApiClient: options.customApiClient || null,
+      });
 
-    if (refExists(repoDir, 'refs/heads/main')) {
-      git(repoDir, ['checkout', '-f', 'main']);
-    } else {
-      git(repoDir, ['checkout', '-b', 'main']);
+      return {
+        projectId: safeId,
+        repoName: prepSummary.repoName,
+        repoDir: prepSummary.repoDir,
+        branch: prepSummary.branch,
+        mainSha: prepSummary.headSha,
+        headSha: prepSummary.headSha,
+        parkedBranch: 'idle',
+        syncSummary: prepSummary,
+      };
+    } catch (err) {
+      // Offline or transient API fallback: prepare physical git branch cleanly & park
+      const fallbackSummary = await prepareWorkspaceRepository({
+        projectId: safeId,
+        workItem: options.workItem || null,
+        targetBranch,
+        workspacesRoot,
+        codeGenReposRoot: options.codeGenReposRoot,
+        offline: true,
+        parkAfterCommit: true,
+      });
+
+      return {
+        projectId: safeId,
+        repoName: fallbackSummary.repoName,
+        repoDir: fallbackSummary.repoDir,
+        branch: fallbackSummary.branch,
+        mainSha: fallbackSummary.headSha,
+        headSha: fallbackSummary.headSha,
+        parkedBranch: 'idle',
+        syncSummary: { ...fallbackSummary, warning: err.message },
+      };
     }
-
-    let syncSummary = null;
-    if (!offline) {
-      try {
-        syncSummary = await syncWorkspaceMetadataSnapshot(repoDir, safeId);
-        const dirty = git(repoDir, ['status', '--porcelain']);
-        if (dirty) {
-          git(repoDir, ['add', '-A']);
-          git(repoDir, ['commit', '--no-gpg-sign', '-m', `chore(snapshot): sync workspace ${safeId} context`]);
-        }
-      } catch (err) {
-        // Offline or transient API fallback: use existing main tree
-        syncSummary = { warning: err.message };
-      }
-    }
-
-    const mainSha = git(repoDir, ['rev-parse', 'HEAD']);
-
-    // Immediately park back onto orphan `idle` branch!
-    git(repoDir, ['checkout', '-f', 'idle']);
-    git(repoDir, ['clean', '-fd']);
-
-    return {
-      projectId: safeId,
-      repoDir,
-      mainSha,
-      parkedBranch: 'idle',
-      syncSummary,
-    };
   });
 }
 

@@ -36,6 +36,14 @@ Every queued task in each batch of 5 passes through five mandatory gates:
 In addition to single-worker mode, `rapider-task-worker` includes the **Isolated Multi-Repo Task Orchestrator** (`scripts/isolated-task-orchestrator.js`) and **Standalone Admin Task Management & Monitoring UI** (`management-ui/`):
 
 ### Key Capabilities
+- **Deterministic Pre-Task Workspace Git Repository Preparation (`scripts/prepare-workspace-repo.js`)**:
+  - Before any task launches, checks out the Workspace's physical GitHub repository (`${projectName}--${projectId}` or `GitInfo.repoName`) on the **task branch** (or `main` if no branch is specified), runs `git pull`, and overwrites & commits the latest Workspace context from Rapider MongoDB and DigitalOcean Spaces S3:
+    1. `<repo root>/.agents/project-data-models.md` — Live output of `GET /project-models/model-descriptions-for-ai-context`.
+    2. `<repo root>/.agents/project-data-manager-guide.md` + updated `<repo root>/AGENTS.md` — Complete `/project-data-manager/{dataTableName}` CRUD & query guide with `Entity -> dataTableName` lookup table.
+    3. `<repo root>/.agents/workspace-datasources-and-integrations.md` — Configured `DataSource`s, OAuth integrations (e.g. Jira, Slack, Google Drive), MCP servers, and OpenAPI tool schemas + invocation commands.
+    4. `<repo root>/_notebooks/` — Full hierarchical Workspace Knowledge Spaces / Notebooks and `ProjectDocument` files synced from MongoDB metadata + DigitalOcean Spaces S3.
+    5. `<repo root>/dev.env`, `stage.env`, `prod.env` — Generated from `ProjectSetting` (shared across environments) + `EnvironmentVariable` (`DEV`, `QA`/`STAGE`, `PROD`), matching Rapider's Project Code Generator.
+  - Full details in **[WORKSPACE_REPO_PREPARATION.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/WORKSPACE_REPO_PREPARATION.md)**.
 - **Dynamic Live Concurrency (`MAX_CONCURRENT = 1..100`, default `5`)**: Stored in Rapider MongoDB (`TaskOrchestratorState`) and adjustable live from the Management UI or `rapider-task-ctl.js` without restarting workers.
 - **Non-Destructive Multi-Repo Staging + 100% Repo Blindness**:
   - Persistent repos (`WORKSPACES/*`, `rapider-apps/APPS/*`, `_repo-cache/*.git`) remain permanently on disk parked on their orphan `idle` branch and are **never deleted**.
@@ -98,12 +106,17 @@ All orchestrator, management UI, operator CLI, workspace repo parking, and verif
 | `npm run ctl:logs` | `npm run ctl:logs -- <workItemId> --type=log` | Fetches and prints private S3 `.log`, `.jsonl`, or `.patch` content (`--type=log\|jsonl\|patch`). |
 | `npm run ctl:cache-status` | `npm run ctl:cache-status` | Inspects local `_repo-cache/*.git` mirrors, `WORKSPACES/*`, and `APPS/*` idle/parking status. |
 
-### 3. Workspace Repo Parking, Single-Worker Helpers, Tests & Provisioning
+### 3. Pre-Task Workspace Repo Preparation, Parking, Single-Worker Helpers & Tests
 
 | Script | Command | Description |
 | :--- | :--- | :--- |
+| `npm run prepare:workspace` | `node scripts/prepare-workspace-repo.js` | Runs the full 7-step deterministic Workspace repo preparation (`--project=<id> [--branch=main] [--park]`). |
+| `npm run prepare:models` | `node scripts/prepare-workspace-repo.js --step=models` | Refreshes `.agents/project-data-models.md`, `.agents/project-data-manager-guide.md`, and `AGENTS.md`. |
+| `npm run prepare:datasources` | `node scripts/prepare-workspace-repo.js --step=datasources` | Refreshes `.agents/workspace-datasources-and-integrations.md` (Jira/MCP/OpenAPI tool schemas). |
+| `npm run prepare:notebooks` | `node scripts/prepare-workspace-repo.js --step=notebooks` | Syncs all Workspace Knowledge Spaces & `ProjectDocument` files from MongoDB + S3 into `_notebooks/`. |
+| `npm run prepare:envs` | `node scripts/prepare-workspace-repo.js --step=envs` | Regenerates `dev.env`, `stage.env`, and `prod.env` from `ProjectSetting` + `EnvironmentVariable`. |
 | `npm run status` | `node scripts/manage-workspace-repos.js --status` | Shows active vs. `idle`-parked branch status across `WORKSPACES/` and `rapider-apps/APPS/`. |
-| `npm run activate` | `node scripts/manage-workspace-repos.js <projectId>` | Activates a single Workspace repo on `main` while parking all others on orphan `idle`. |
+| `npm run activate` | `node scripts/manage-workspace-repos.js <projectId>` | Activates & prepares a single Workspace repo on `main` (or task branch) while parking all others on orphan `idle`. |
 | `npm run park:all` | `node scripts/manage-workspace-repos.js --park-all` | Parks every Workspace and App repository onto its minimal `README.md`-only `idle` branch. |
 | `npm run fetch-tasks` | `node scripts/fetch-and-validate-tasks.js --limit=5` | Fetches and validates the next batch of open tasks ordered by `(queueOrder ASC, createdDate ASC)`. |
 | `npm run fetch-tasks:all` | `node scripts/fetch-and-validate-tasks.js --all` | Lists and validates all open tasks across Workspaces. |
@@ -112,14 +125,16 @@ All orchestrator, management UI, operator CLI, workspace repo parking, and verif
 | `npm run upload-artifact` | `node scripts/upload-task-artifacts.js` | Uploads deliverable files to Workspace `ProjectFile` storage. |
 | `npm run patch-task` | `node scripts/patch-workitem-task.js` | Posts `WorkItemEvent` replies and transitions `WorkItem` status. |
 | `npm run logs:sync` | `node scripts/generate-iteration-logs.js` | Synchronizes markdown iteration audit logs under `logs/`. |
-| `npm test` | `node --test tests/*.test.js` | Runs the complete automated test suite (including OS kernel sandbox isolation checks). |
-| `npm run test:orchestrator` | `node --test tests/isolated-orchestrator.test.js` | Runs the 11-test Isolated Multi-Repo Orchestrator & Seatbelt/Bubblewrap suite. |
+| `npm test` | `node --test tests/*.test.js` | Runs the complete 15-test automated suite (orchestrator, OS jail, workspace repo preparation, guardrails). |
+| `npm run test:orchestrator` | `node --test tests/isolated-orchestrator.test.js` | Runs the Isolated Multi-Repo Orchestrator & Seatbelt/Bubblewrap suite. |
+| `npm run test:prepare` | `node --test tests/workspace-repo-preparation.test.js` | Runs the Pre-Task Workspace Repo Preparation, `/project-data-manager` CRUD & Jira/MCP proxy suite. |
 | `npm run ubuntu:setup` | `bash deploy/ubuntu-setup.sh` | Provisions Ubuntu 22.04/24.04 LTS (`bubblewrap`, unprivileged `rapider-orch` user, `systemd` services). |
 
 ---
 
 ## Documentation & Rules Index
 
+- **[WORKSPACE_REPO_PREPARATION.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/WORKSPACE_REPO_PREPARATION.md)** — **Deterministic Pre-Task Workspace Git Repository Preparation Guide**: 7-step pre-flight sync (`git pull` on task branch/`main`, `.agents/project-data-models.md`, `.agents/project-data-manager-guide.md`, `.agents/workspace-datasources-and-integrations.md`, `_notebooks/` S3 sync, `dev.env` / `stage.env` / `prod.env` generation, overwrite & commit before task launch), plus CLI & proxy reference.
 - **[ISOLATED_TASK_ORCHESTRATOR_GUIDE.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/ISOLATED_TASK_ORCHESTRATOR_GUIDE.md)** — **Master Implementation & Operations Guide**: full architecture, dynamic `MAX_CONCURRENT`, non-destructive multi-repo staging, macOS Seatbelt + Linux Bubblewrap OS jailing, `127.0.0.1` capability proxy, 4-layer agent rules/skills/hooks, private S3 logging, complete `package.json` scripts reference, and Mac/Ubuntu deployment steps.
 - **[management-ui/README.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/management-ui/README.md)** — **Standalone Admin Task Management & Monitoring UI Guide**: Rapider login + `admin` permission enforcement (`403`), live concurrency & pause controls, Active/Next-20 queue reordering & Pin-to-Top, Last-20 execution history, and S3 `.log`/`.jsonl`/`.patch` viewer.
 - **[../rapider-server/documentation/task-orchestrator-admin-api.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-server/documentation/task-orchestrator-admin-api.md)** — **Backend Admin API & MongoDB/S3 Specification**: LoopBack 4 models (`TaskOrchestratorState`, `TaskExecutionRecord`, `WorkItem.queueOrder`), `TaskOrchestratorAdminController` endpoints, and private `s3-file.service.ts` key layout.
@@ -137,6 +152,7 @@ All orchestrator, management UI, operator CLI, workspace repo parking, and verif
 ```text
 rapider-task-worker/
 ├── README.md                           # Overview, quick start, scripts table & markdown docs index
+├── WORKSPACE_REPO_PREPARATION.md       # 7-step pre-task Workspace repo sync (models, MCP/Jira, _notebooks, *.env)
 ├── ISOLATED_TASK_ORCHESTRATOR_GUIDE.md # Complete architecture, scripts, sandbox & Ubuntu deployment guide
 ├── AGENTS.md                           # Canonical rules & guardrails for ISOLATED-TASK-WORKER
 ├── TASK_WORKER_AUTOMATION_GUIDE.md     # Single-worker lifecycle, REST contracts & idle branch protocol
@@ -152,6 +168,7 @@ rapider-task-worker/
 │   ├── rapider-task-orchestrator.service
 │   └── rapider-task-management-ui.service
 ├── scripts/                            # Orchestrator, OS sandbox runner, proxy, CLI & workspace helpers
+│   ├── prepare-workspace-repo.js       # Deterministic 7-step Workspace repo pre-task preparation & commit
 │   ├── isolated-task-orchestrator.js   # Parallel multi-repo daemon (dynamic MAX_CONCURRENT)
 │   ├── stage-task-sandbox.js           # git archive -> single-commit ORCH_BASELINE sandbox builder
 │   ├── sandbox-runner.js               # macOS sandbox-exec & Linux bwrap launcher + trajectory logger

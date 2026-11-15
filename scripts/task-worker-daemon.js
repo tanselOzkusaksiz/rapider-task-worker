@@ -45,19 +45,23 @@ function parseIntervalMs(raw = '5m') {
   return val * 60 * 1000;
 }
 
-function buildHeadlessAgentPrompt(task) {
+function buildHeadlessAgentPrompt(task, activation = {}) {
+  const relRepo = activation.repoDir
+    ? path.relative(WORKER_ROOT, activation.repoDir)
+    : `WORKSPACES/${task.projectId}`;
+  const activeBranch = activation.branch || 'main';
   return [
     `You are ISOLATED-TASK-WORKER inside ${WORKER_ROOT}. Follow AGENTS.md strictly.`,
     `Active WorkItem ID: ${task.id}`,
-    `Active Workspace Project ID: ${task.projectId} (already checked out on main at WORKSPACES/${task.projectId}/; do NOT touch any other repo).`,
+    `Active Workspace Project ID: ${task.projectId} (prepared & committed on branch '${activeBranch}' at ${relRepo}/; do NOT touch any other repo).`,
     `Title: ${task.title}`,
     `Exact User Request: ${task.exactUserRequest}`,
     task.requiresAttachmentInspection
       ? `MANDATORY GATE: Inspect all downloaded attachments in _process-logs/task-attachments/${task.id}/ via read_file BEFORE executing, and pass --attachment-analysis="..." to scripts/patch-workitem-task.js.`
       : `Attachments: None.`,
     `Execute Steps 2-5 from AGENTS.md:`,
-    `1. Read WORKSPACES/${task.projectId}/WORKSPACE_CONTEXT.md and models/*.json. If this request is NOT related to this Workspace's data, models, templates, files, or applications, immediately reject it via: node scripts/patch-workitem-task.js --id=${task.id} --project=${task.projectId} --status=rejected --reply="${DEFAULT_SCOPE_REJECTION_REPLY}"`,
-    `2. Otherwise complete the data report / Handlebars template / file preparation (.md, .pdf, .csv) / allowed API payload in _artifacts/${task.id}/ using node scripts/workspace-tools-cli.js.`,
+    `1. Read ${relRepo}/AGENTS.md, ${relRepo}/.agents/project-data-models.md, ${relRepo}/.agents/project-data-manager-guide.md, ${relRepo}/.agents/workspace-datasources-and-integrations.md, and ${relRepo}/_notebooks/INDEX.md (plus ${relRepo}/dev.env, stage.env, prod.env when environment settings are needed). If this request is NOT related to this Workspace's data, models, datasources, notebooks, templates, files, or applications, immediately reject it via: node scripts/patch-workitem-task.js --id=${task.id} --project=${task.projectId} --status=rejected --reply="${DEFAULT_SCOPE_REJECTION_REPLY}"`,
+    `2. Otherwise complete the data report / Handlebars template / file preparation (.md, .pdf, .csv) / allowed API or DataSource action in _artifacts/${task.id}/ using node scripts/workspace-tools-cli.js.`,
     `3. Finalize via node scripts/patch-workitem-task.js --id=${task.id} --project=${task.projectId} (--status=resolved with --attach=..., or --status=pending if a user clarifying question is needed, or --status=failed with sanitized blocker reasons).`,
   ].join('\n');
 }
@@ -126,9 +130,9 @@ async function runBatchDrainCycle({
         // Headless autonomous execution per isolated Workspace repo
         try {
           await claimWorkItemTask(task.id, task.projectId);
-          await activateWorkspaceRepo(task.projectId);
+          const activation = await activateWorkspaceRepo(task.projectId, { workItem: task });
 
-          const prompt = buildHeadlessAgentPrompt(task);
+          const prompt = buildHeadlessAgentPrompt(task, activation);
           const cliBin = process.env.AGY_BIN || 'agy';
           execFileSync(cliBin, ['-p', prompt], {
             cwd: WORKER_ROOT,

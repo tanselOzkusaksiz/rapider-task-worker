@@ -5,13 +5,22 @@
  *
  * Zero-secret sandbox tool CLI mounted read-only at `<sandbox>/tools/rapider-task-cli.js`.
  * Communicates strictly with `RAPIDER_TASK_PROXY_URL` using `RAPIDER_TASK_NONCE` for
- * Workspace data/model/template operations, and executes pure local CSV, Handlebars,
- * and printable HTML/PDF helpers inside the jailed sandbox.
+ * Workspace Project Data Manager (`CRUD` + `bulk` + `count`), DataSource/MCP/Integration
+ * tool execution (e.g. Jira, Slack, OpenAPI), and local CSV/Handlebars/PDF deliverables.
  *
  * Commands:
  *   node ../tools/rapider-task-cli.js context
  *   node ../tools/rapider-task-cli.js list-models
- *   node ../tools/rapider-task-cli.js query-data --table=<dataTableName> [--all] [--limit=200] [--out=../output/rows.json]
+ *   node ../tools/rapider-task-cli.js query-data --table=<dataTableName> [--all] [--limit=200] [--filter='{...}'] [--out=../output/rows.json]
+ *   node ../tools/rapider-task-cli.js count-data --table=<dataTableName> [--where='{...}']
+ *   node ../tools/rapider-task-cli.js get-record --table=<dataTableName> --id=<uuid> [--filter='{...}']
+ *   node ../tools/rapider-task-cli.js create-record --table=<dataTableName> (--data='{...}' | --file=payload.json)
+ *   node ../tools/rapider-task-cli.js bulk-create-records --table=<dataTableName> (--data='[...]' | --file=rows.json)
+ *   node ../tools/rapider-task-cli.js update-record --table=<dataTableName> --id=<uuid> (--data='{...}' | --file=patch.json) [--replace]
+ *   node ../tools/rapider-task-cli.js delete-record --table=<dataTableName> --id=<uuid>
+ *   node ../tools/rapider-task-cli.js list-datasources
+ *   node ../tools/rapider-task-cli.js list-datasource-tools --datasource=<dataSourceId>
+ *   node ../tools/rapider-task-cli.js run-datasource-tool --datasource=<dataSourceId> --tool=<toolName> [--input='{...}' | --file=input.json]
  *   node ../tools/rapider-task-cli.js verify-handlebars --template=tpl.hbs --data=sample.json [--out=preview.html]
  *   node ../tools/rapider-task-cli.js save-message-template --key=<slug> --subject="..." --file=tpl.hbs [--type=EMAIL] [--env=DEV]
  *   node ../tools/rapider-task-cli.js export-csv --in=rows.json --out=../output/deliverables/report.csv [--columns=a,b,c]
@@ -33,6 +42,18 @@ function hasFlag(args, name) {
   return args.includes(`--${name}`);
 }
 
+function readJsonArgOrFile(args, inlineArgName = 'data', fileArgName = 'file', defaultVal = undefined) {
+  const rawInline = getArg(args, inlineArgName);
+  if (rawInline !== null) {
+    return JSON.parse(rawInline);
+  }
+  const fileArg = getArg(args, fileArgName);
+  if (fileArg !== null) {
+    return JSON.parse(fs.readFileSync(path.resolve(fileArg), 'utf8'));
+  }
+  return defaultVal;
+}
+
 async function callProxy(endpointPath, options = {}) {
   const proxyUrl = String(process.env.RAPIDER_TASK_PROXY_URL || '').trim();
   const nonce = String(process.env.RAPIDER_TASK_NONCE || '').trim();
@@ -46,9 +67,9 @@ async function callProxy(endpointPath, options = {}) {
     headers: {
       Accept: 'application/json',
       'X-Task-Nonce': nonce,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -200,7 +221,9 @@ th { background: #f3f4f6; font-weight: 600; }
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd) {
-    console.error('Usage: rapider-task-cli.js <context|list-models|query-data|verify-handlebars|save-message-template|export-csv|render-pdf|workspace-api> [flags]');
+    console.error(
+      'Usage: rapider-task-cli.js <context|list-models|query-data|count-data|get-record|create-record|bulk-create-records|update-record|delete-record|list-datasources|list-datasource-tools|run-datasource-tool|verify-handlebars|save-message-template|export-csv|render-pdf|workspace-api> [flags]'
+    );
     process.exit(1);
   }
 
@@ -252,6 +275,116 @@ async function main() {
     } else {
       console.log(JSON.stringify(allRows, null, 2));
     }
+    return;
+  }
+
+  if (cmd === 'count-data') {
+    const table = getArg(args, 'table');
+    if (!table) throw new Error('--table=<dataTableName> is required.');
+    const rawWhere = getArg(args, 'where');
+    const qs = rawWhere ? `?where=${encodeURIComponent(rawWhere)}` : '';
+    const resp = await callProxy(`/task-proxy/data/${encodeURIComponent(table)}/count${qs}`);
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'get-record') {
+    const table = getArg(args, 'table');
+    const id = getArg(args, 'id');
+    if (!table || !id) throw new Error('--table=<dataTableName> and --id=<uuid> are required.');
+    const rawFilter = getArg(args, 'filter');
+    const qs = rawFilter ? `?filter=${encodeURIComponent(rawFilter)}` : '';
+    const resp = await callProxy(
+      `/task-proxy/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}${qs}`
+    );
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'create-record') {
+    const table = getArg(args, 'table');
+    if (!table) throw new Error('--table=<dataTableName> is required.');
+    const payload = readJsonArgOrFile(args, 'data', 'file');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('--data=\'{...}\' or --file=payload.json (JSON object) is required.');
+    }
+    const resp = await callProxy(`/task-proxy/data/${encodeURIComponent(table)}`, {
+      method: 'POST',
+      body: payload,
+    });
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'bulk-create-records') {
+    const table = getArg(args, 'table');
+    if (!table) throw new Error('--table=<dataTableName> is required.');
+    const payload = readJsonArgOrFile(args, 'data', 'file');
+    if (!Array.isArray(payload)) {
+      throw new Error('--data=\'[...]\' or --file=rows.json (JSON array) is required.');
+    }
+    const resp = await callProxy(`/task-proxy/data/${encodeURIComponent(table)}/bulk`, {
+      method: 'POST',
+      body: payload,
+    });
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'update-record') {
+    const table = getArg(args, 'table');
+    const id = getArg(args, 'id');
+    if (!table || !id) throw new Error('--table=<dataTableName> and --id=<uuid> are required.');
+    const payload = readJsonArgOrFile(args, 'data', 'file');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('--data=\'{...}\' or --file=patch.json (JSON object) is required.');
+    }
+    const suffix = hasFlag(args, 'replace') ? '/replace' : '';
+    const resp = await callProxy(
+      `/task-proxy/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}${suffix}`,
+      { method: 'PATCH', body: payload }
+    );
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'delete-record') {
+    const table = getArg(args, 'table');
+    const id = getArg(args, 'id');
+    if (!table || !id) throw new Error('--table=<dataTableName> and --id=<uuid> are required.');
+    const resp = await callProxy(
+      `/task-proxy/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'list-datasources') {
+    console.log(JSON.stringify(await callProxy('/task-proxy/datasources'), null, 2));
+    return;
+  }
+
+  if (cmd === 'list-datasource-tools') {
+    const dsId = getArg(args, 'datasource') || getArg(args, 'id');
+    if (!dsId) throw new Error('--datasource=<dataSourceId> is required.');
+    const resp = await callProxy(`/task-proxy/datasources/${encodeURIComponent(dsId)}/tools`);
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+
+  if (cmd === 'run-datasource-tool') {
+    const dsId = getArg(args, 'datasource') || getArg(args, 'id');
+    const toolName = getArg(args, 'tool');
+    if (!dsId || !toolName) {
+      throw new Error('--datasource=<dataSourceId> and --tool=<toolName> are required.');
+    }
+    const inputPayload = readJsonArgOrFile(args, 'input', 'file', {});
+    const resp = await callProxy(
+      `/task-proxy/datasources/${encodeURIComponent(dsId)}/tools/${encodeURIComponent(toolName)}/execute`,
+      { method: 'POST', body: inputPayload }
+    );
+    console.log(JSON.stringify(resp, null, 2));
     return;
   }
 
@@ -382,4 +515,3 @@ main().catch((err) => {
   console.error(`[RapiderTaskCLI] Error: ${err.message}`);
   process.exit(1);
 });
-

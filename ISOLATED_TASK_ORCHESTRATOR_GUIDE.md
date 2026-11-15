@@ -10,9 +10,10 @@ The **Rapider Isolated Multi-Repo Task Orchestrator** (`scripts/isolated-task-or
 2. **Unified Rapider MongoDB Metadata + Private S3 Logs (`s3-file.service.ts`)**:
    - All queue ranks (`WorkItem.queueOrder`), orchestrator configuration/heartbeats/signals (`TaskOrchestratorState`), and run telemetry (`TaskExecutionRecord`) live directly inside **Rapider's existing MongoDB** (automatically switching to `rapider_offline` when `IS_OFFLINE_MODE=true`).
    - Full execution `.log` files, `agy` `stream-json` `.jsonl` trajectories, and harvested git `.patch` diffs are uploaded **privately (`isPublic = false`)** via `rapider-server/rappider/src/services/s3-file.service.ts` (DigitalOcean Spaces in online mode; `/_offline-spaces` on local disk in offline mode).
-3. **Non-Destructive Multi-Repo Staging (`idle` Branch Preservation)**:
-   - Persistent master repositories (`WORKSPACES/<projectId>`, `rapider-apps/APPS/<app>`, and `_repo-cache/*.git`) are **never deleted** and stay permanently parked on their orphan `idle` branch (`README.md` only).
-   - For each claimed task, `stage-task-sandbox.js` extracts **only** that Workspace's context (`workspace-context/`) and its installed microapplications (`apps/<appKey>/`) via `git archive <baseSha> | tar -x`, initializing a fresh 1-commit local git repo tagged `ORCH_BASELINE` (**zero remotes, zero prior commit history, zero `idle` branch, zero sibling apps**).
+3. **Deterministic Pre-Task Workspace Repo Sync + Non-Destructive Multi-Repo Staging (`idle` Branch Preservation)**:
+   - Before staging any claimed task, `prepare-workspace-repo.js` resolves the Workspace's physical GitHub repository (`GitInfo.repoName`, e.g. `${projectName}--${projectId}`), switches to the task's target branch (or `main` when unspecified), runs `git pull`, overwrites `.agents/project-data-models.md`, `.agents/project-data-manager-guide.md`, `.agents/workspace-datasources-and-integrations.md`, `AGENTS.md`, `_notebooks/` (synced from MongoDB + DigitalOcean Spaces S3), and `dev.env` / `stage.env` / `prod.env`, commits the refreshed state onto the branch, and immediately parks the host repository back onto `idle`. See **[WORKSPACE_REPO_PREPARATION.md](file:///Users/tanselozkusaksiz/Projects/Rappider/code/_rapider-monorepo/rapider-task-worker/WORKSPACE_REPO_PREPARATION.md)** for full details.
+   - Persistent master repositories (`WORKSPACES/<repoName>`, `rapider-apps/APPS/<app>`, and `_repo-cache/*.git`) are **never deleted** and stay permanently parked on their orphan `idle` branch (`README.md` only).
+   - For each claimed task, `stage-task-sandbox.js` extracts **only** that Workspace's prepared branch commit (`workspace-context/`) and its installed microapplications (`apps/<appKey>/`) via `git archive <baseSha> | tar -x`, initializing a fresh 1-commit local git repo tagged `ORCH_BASELINE` (**zero remotes, zero prior commit history, zero `idle` branch, zero sibling apps**).
 4. **Kernel-Enforced OS Sandbox + Ephemeral Capability Proxy**:
    - **macOS (`darwin`)**: `/usr/bin/sandbox-exec` Seatbelt profile blocking `file-read*` / `file-write*` on sibling `_sandboxes/*`, `WORKSPACES/*`, `APPS/*`, `~/.ssh`, `~/.aws`, and all `.env` / `.server.env` files, while enforcing read-only access on `<sandbox>/tools/`.
    - **Ubuntu Linux (`linux`)**: Rootless `/usr/bin/bwrap` (Bubblewrap) namespace jail (`--unshare-pid --unshare-ipc --unshare-uts --die-with-parent`) bind-mounting only `/usr`, `/bin`, `/lib*`, `/tools` (read-only), and `/workspace` + `/output` (read-write).
@@ -72,15 +73,21 @@ Run all commands below from `/Users/tanselozkusaksiz/Projects/Rappider/code/_rap
 | `npm run ctl:logs` | `npm run ctl:logs -- <workItemId> --type=log` | Streams private S3 `.log`, `.jsonl` (`--type=jsonl`), git `.patch` (`--type=patch`), or live MongoDB tail (`--type=tail`). |
 | `npm run ctl:cache-status` | `npm run ctl:cache-status` | Verifies all persistent master repos under `WORKSPACES/` are safely parked on their orphan `idle` branch. |
 
-### C. Workspace Repo Management, Legacy Single-Worker & Tests
+### C. Workspace Repo Preparation, Management, Legacy Single-Worker & Tests
 
 | Script | Underlying Command | Description |
 | :--- | :--- | :--- |
-| `npm test` | `node --test tests/*.test.js` | Runs all 11 unit, OS-sandbox (`sandbox-exec`), proxy, Stop-hook, and UI gateway tests. |
+| `npm run prepare:workspace` | `node scripts/prepare-workspace-repo.js` | Full 7-step deterministic Workspace repo preparation (`--project=<id> [--branch=main] [--park]`). |
+| `npm run prepare:models` | `node scripts/prepare-workspace-repo.js --step=models` | Refreshes `.agents/project-data-models.md`, `.agents/project-data-manager-guide.md`, and `AGENTS.md`. |
+| `npm run prepare:datasources` | `node scripts/prepare-workspace-repo.js --step=datasources` | Refreshes `.agents/workspace-datasources-and-integrations.md` (Jira/MCP/OpenAPI tools). |
+| `npm run prepare:notebooks` | `node scripts/prepare-workspace-repo.js --step=notebooks` | Syncs Workspace Knowledge Spaces & documents from MongoDB + S3 into `_notebooks/`. |
+| `npm run prepare:envs` | `node scripts/prepare-workspace-repo.js --step=envs` | Generates `dev.env`, `stage.env`, and `prod.env` from `ProjectSetting` + `EnvironmentVariable`. |
+| `npm test` | `node --test tests/*.test.js` | Runs all 15 unit, OS-sandbox (`sandbox-exec`), workspace repo preparation, proxy, Stop-hook, and UI gateway tests. |
 | `npm run test:orchestrator` | `node --test tests/isolated-orchestrator.test.js` | Runs only the Isolated Multi-Repo Orchestrator, OS jail blindness, and Management UI test suite. |
-| `npm run status` | `node scripts/manage-workspace-repos.js --status` | Shows active vs `PARKED (idle)` branch status for all local `WORKSPACES/<projectId>` repos. |
+| `npm run test:prepare` | `node --test tests/workspace-repo-preparation.test.js` | Runs the Pre-Task Workspace Repo Preparation, `/project-data-manager` CRUD & Jira/MCP proxy test suite. |
+| `npm run status` | `node scripts/manage-workspace-repos.js --status` | Shows active vs `PARKED (idle)` branch status for all local `WORKSPACES/` repos. |
 | `npm run park:all` | `node scripts/manage-workspace-repos.js --park-all` | Forces every repo in `WORKSPACES/` onto its orphan `idle` branch. |
-| `npm run activate` | `node scripts/manage-workspace-repos.js --activate=<projectId>` | Manually activates a single Workspace snapshot on `main` for inspection. |
+| `npm run activate` | `node scripts/manage-workspace-repos.js --activate=<projectId>` | Manually activates & prepares a single Workspace repo on `main` (or `--branch=...`) for inspection. |
 | `npm run fetch-tasks` | `node scripts/fetch-and-validate-tasks.js --limit=5` | Diagnostic queue fetch ordered by `queueOrder ASC -> occurredAt ASC -> createdDate ASC`. |
 | `npm run fetch-tasks:all` | `node scripts/fetch-and-validate-tasks.js --all` | Diagnostic listing of tasks across all statuses. |
 | `npm run workspace:tools` | `node scripts/workspace-tools-cli.js` | Host-side CLI for Workspace model queries, Handlebars compile checks, CSV exports, and PDF rendering. |
@@ -121,14 +128,27 @@ _sandboxes/task-<workItemId>-<runShort>/
     ├── .task-attachments/                # Pre-downloaded ProjectFiles & S3 images
     ├── .agents/
     │   ├── hooks.json                    # Layer 4: SessionStart + Stop hooks
+    │   ├── project-data-models.md        # Mirrored live Workspace entities, fields & relations
+    │   ├── project-data-manager-guide.md # Mirrored /project-data-manager/{table} CRUD guide
+    │   ├── workspace-datasources-and-integrations.md # Mirrored Jira/MCP/OpenAPI tools guide
     │   └── skills/                       # Layer 3: On-demand modular playbooks
     │       ├── complex-data-reporting/SKILL.md
     │       ├── handlebars-templating/SKILL.md
     │       ├── deliverable-files/SKILL.md
     │       └── workspace-api-actions/SKILL.md
-    ├── workspace-context/                # 1-commit ORCH_BASELINE snapshot of target Workspace ONLY
+    ├── workspace-context/                # 1-commit ORCH_BASELINE of target Workspace branch
+    │   ├── AGENTS.md                     # Managed Workspace context pointer block + repo rules
+    │   ├── .agents/
+    │   │   ├── project-data-models.md
+    │   │   ├── project-data-manager-guide.md
+    │   │   └── workspace-datasources-and-integrations.md
+    │   ├── _notebooks/                   # Hierarchical Knowledge Spaces & S3 Markdown pages
+    │   │   └── INDEX.md
+    │   ├── dev.env                       # ProjectSetting + DEV EnvironmentVariable
+    │   ├── stage.env                     # ProjectSetting + QA/STAGE EnvironmentVariable
+    │   ├── prod.env                      # ProjectSetting + PROD EnvironmentVariable
     │   ├── WORKSPACE_CONTEXT.md
-    │   ├── models/*.model.json
+    │   ├── models/*.json
     │   ├── schemas/data-schemas.json
     │   └── templates/*.json
     └── apps/                             # Layer 2: ONLY microapps installed in this Workspace
