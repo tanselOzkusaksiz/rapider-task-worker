@@ -99,6 +99,15 @@ function selectOldestOpenTaskWorkItemsPure(rawItems = [], options = {}) {
   }
 
   filtered.sort((a, b) => {
+    const qoA =
+      typeof a.queueOrder === 'number' && Number.isFinite(a.queueOrder)
+        ? a.queueOrder
+        : Date.parse(a.occurredAt || a.createdDate || '1970-01-01T00:00:00.000Z') || 0;
+    const qoB =
+      typeof b.queueOrder === 'number' && Number.isFinite(b.queueOrder)
+        ? b.queueOrder
+        : Date.parse(b.occurredAt || b.createdDate || '1970-01-01T00:00:00.000Z') || 0;
+    if (qoA !== qoB) return qoA - qoB;
     const tsA = Date.parse(a.occurredAt || a.createdDate || '1970-01-01T00:00:00.000Z') || 0;
     const tsB = Date.parse(b.occurredAt || b.createdDate || '1970-01-01T00:00:00.000Z') || 0;
     if (tsA !== tsB) return tsA - tsB;

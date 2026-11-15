@@ -422,6 +422,192 @@ function getWorkspaceReposStatus(options = {}) {
     });
 }
 
+// Per-workspace in-process mutex so concurrent stagers for the same projectId serialize cleanly
+const workspaceSyncLocks = new Map();
+
+async function withWorkspaceLock(projectId, fn) {
+  const prev = workspaceSyncLocks.get(projectId) || Promise.resolve();
+  let release;
+  const next = new Promise((resolve) => {
+    release = resolve;
+  });
+  workspaceSyncLocks.set(projectId, prev.then(() => next));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (workspaceSyncLocks.get(projectId) === next) {
+      workspaceSyncLocks.delete(projectId);
+    }
+  }
+}
+
+/**
+ * Updates `WORKSPACES/<projectId>` on `main` (if online), captures the exact `main`
+ * commit SHA, and immediately parks `WORKSPACES/<projectId>` back onto `idle` so
+ * master repos NEVER remain exposed on disk during parallel execution.
+ */
+async function prepareWorkspaceSnapshotCommit(projectId, options = {}) {
+  const workspacesRoot = options.workspacesRoot || DEFAULT_WORKSPACES_ROOT;
+  const offline = Boolean(options.offline);
+  const safeId = sanitizeFolderSegment(projectId);
+
+  return withWorkspaceLock(safeId, async () => {
+    fs.mkdirSync(workspacesRoot, { recursive: true });
+    const repoDir = path.join(workspacesRoot, safeId);
+    ensureGitRepoAndIdleBranch(repoDir, safeId);
+
+    if (refExists(repoDir, 'refs/heads/main')) {
+      git(repoDir, ['checkout', '-f', 'main']);
+    } else {
+      git(repoDir, ['checkout', '-b', 'main']);
+    }
+
+    let syncSummary = null;
+    if (!offline) {
+      try {
+        syncSummary = await syncWorkspaceMetadataSnapshot(repoDir, safeId);
+        const dirty = git(repoDir, ['status', '--porcelain']);
+        if (dirty) {
+          git(repoDir, ['add', '-A']);
+          git(repoDir, ['commit', '--no-gpg-sign', '-m', `chore(snapshot): sync workspace ${safeId} context`]);
+        }
+      } catch (err) {
+        // Offline or transient API fallback: use existing main tree
+        syncSummary = { warning: err.message };
+      }
+    }
+
+    const mainSha = git(repoDir, ['rev-parse', 'HEAD']);
+
+    // Immediately park back onto orphan `idle` branch!
+    git(repoDir, ['checkout', '-f', 'idle']);
+    git(repoDir, ['clean', '-fd']);
+
+    return {
+      projectId: safeId,
+      repoDir,
+      mainSha,
+      parkedBranch: 'idle',
+      syncSummary,
+    };
+  });
+}
+
+/**
+ * Resolves local git repositories (parked on `idle` or bare mirrors) for ONLY the
+ * microapplication keys installed in the target Workspace.
+ * Reads `main` / `origin/main` SHA directly from git refs WITHOUT checking out `main`
+ * on the host filesystem, keeping all master app repos untouched on `idle`.
+ */
+function resolveInstalledAppRepoSources(installedAppKeys = [], options = {}) {
+  const appsCloneRoot =
+    options.appsCloneRoot ||
+    process.env.RAPIDER_APPS_ROOT ||
+    path.resolve(WORKER_ROOT, '../rapider-apps/APPS');
+  const bareCacheRoot =
+    options.bareCacheRoot ||
+    process.env.REPO_CACHE_DIR ||
+    path.resolve(WORKER_ROOT, '_repo-cache');
+
+  const resolved = [];
+  if (!Array.isArray(installedAppKeys) || installedAppKeys.length === 0) {
+    return resolved;
+  }
+
+  const normalizedTargets = new Set(
+    installedAppKeys
+      .map((k) => String(k || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  // 1. Check bare mirrors in `_repo-cache/<key>.git`
+  if (fs.existsSync(bareCacheRoot)) {
+    const entries = fs.readdirSync(bareCacheRoot, { withFileTypes: true });
+    for (const d of entries) {
+      if (!d.isDirectory()) continue;
+      const base = d.name.replace(/\.git$/i, '');
+      const shortKey = base.replace(/^rapider-app-/, '');
+      if (
+        normalizedTargets.has(base.toLowerCase()) ||
+        normalizedTargets.has(shortKey.toLowerCase())
+      ) {
+        const repoDir = path.join(bareCacheRoot, d.name);
+        const ref = refExists(repoDir, 'refs/heads/main')
+          ? 'refs/heads/main'
+          : refExists(repoDir, 'refs/heads/master')
+            ? 'refs/heads/master'
+            : null;
+        if (ref) {
+          resolved.push({
+            repoKey: base,
+            appKey: shortKey,
+            hostRepoDir: repoDir,
+            baseSha: git(repoDir, ['rev-parse', ref]),
+            isBare: true,
+          });
+          normalizedTargets.delete(base.toLowerCase());
+          normalizedTargets.delete(shortKey.toLowerCase());
+        }
+      }
+    }
+  }
+
+  // 2. Check persistent app repos under `rapider-apps/APPS/` (kept parked on `idle`!)
+  if (normalizedTargets.size > 0 && fs.existsSync(appsCloneRoot)) {
+    const appDirs = fs
+      .readdirSync(appsCloneRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory());
+
+    for (const d of appDirs) {
+      const repoDir = path.join(appsCloneRoot, d.name);
+      if (!fs.existsSync(path.join(repoDir, '.git'))) continue;
+
+      const folderLower = d.name.toLowerCase();
+      const shortFolderLower = folderLower.replace(/^rapider-app-/, '');
+
+      const ref = refExists(repoDir, 'refs/heads/main')
+        ? 'refs/heads/main'
+        : refExists(repoDir, 'refs/remotes/origin/main')
+          ? 'refs/remotes/origin/main'
+          : null;
+      if (!ref) continue;
+
+      let matched =
+        normalizedTargets.has(folderLower) ||
+        normalizedTargets.has(shortFolderLower);
+
+      let manifestAppKey = d.name.replace(/^rapider-app-/, '');
+      if (!matched) {
+        // Also inspect appKey inside `<ref>:app.manifest.json` without checking out!
+        try {
+          const rawManifest = git(repoDir, ['show', `${ref}:app.manifest.json`]);
+          const parsed = JSON.parse(rawManifest);
+          if (parsed && parsed.appKey) {
+            manifestAppKey = String(parsed.appKey);
+            if (normalizedTargets.has(manifestAppKey.toLowerCase())) {
+              matched = true;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (matched) {
+        resolved.push({
+          repoKey: d.name,
+          appKey: manifestAppKey,
+          hostRepoDir: repoDir,
+          baseSha: git(repoDir, ['rev-parse', ref]),
+          isBare: false,
+        });
+      }
+    }
+  }
+
+  return resolved;
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
   const getArg = (name) => {
@@ -482,4 +668,6 @@ module.exports = {
   activateWorkspaceRepo,
   getWorkspaceReposStatus,
   syncWorkspaceMetadataSnapshot,
+  prepareWorkspaceSnapshotCommit,
+  resolveInstalledAppRepoSources,
 };
