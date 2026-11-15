@@ -363,22 +363,13 @@ function preparePhysicalGitRepo({
   const canonicalWorkspaceDir = path.join(workspacesRoot, expectedRepoName);
   const legacyBareIdDir = path.join(workspacesRoot, safeId);
 
-  // Migrate legacy bare `<workspacesRoot>/<projectId>` checkout to `<workspacesRoot>/<expectedRepoName>`
-  if (
-    expectedRepoName !== safeId &&
-    !fs.existsSync(canonicalWorkspaceDir) &&
-    fs.existsSync(path.join(legacyBareIdDir, '.git'))
-  ) {
-    fs.renameSync(legacyBareIdDir, canonicalWorkspaceDir);
-  }
-
   const candidateDirs = [];
   if (codeGenReposRoot) {
     candidateDirs.push(path.resolve(codeGenReposRoot, expectedRepoName));
   }
   candidateDirs.push(canonicalWorkspaceDir);
 
-  // Also check if another `<prefix>--<projectId>` directory already exists under `workspacesRoot`
+  // Also check if another `<prefix>--<projectId>` or legacy `<projectId>` directory already exists under `workspacesRoot`
   const existingSuffixed = fs
     .readdirSync(workspacesRoot, { withFileTypes: true })
     .find(
@@ -390,6 +381,7 @@ function preparePhysicalGitRepo({
   if (existingSuffixed) {
     candidateDirs.push(path.join(workspacesRoot, existingSuffixed.name));
   }
+  candidateDirs.push(legacyBareIdDir);
 
   let repoDir = candidateDirs.find((dir) => fs.existsSync(path.join(dir, '.git'))) || null;
   let existedOnDisk = Boolean(repoDir);
@@ -464,10 +456,17 @@ function preparePhysicalGitRepo({
       }
     }
 
-    // Initialize local physical repository on `main` (and `targetBranch`) with expected name!
-    if (!fs.existsSync(path.join(repoDir, '.git'))) {
+    // Initialize local physical repository on `main` (and `targetBranch`) with expected name
+    // (handles both uninitialized folders AND newly created empty remote repositories!)
+    if (!fs.existsSync(path.join(repoDir, '.git')) || !hasAnyCommits(repoDir)) {
       fs.mkdirSync(repoDir, { recursive: true });
-      git(repoDir, ['init', '-b', 'main']);
+      if (!fs.existsSync(path.join(repoDir, '.git'))) {
+        git(repoDir, ['init', '-b', 'main']);
+      } else {
+        try {
+          git(repoDir, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+        } catch (_) {}
+      }
       ensureGitAuthorConfig(repoDir);
       const readmePath = path.join(repoDir, 'README.md');
       if (!fs.existsSync(readmePath)) {
@@ -487,7 +486,7 @@ function preparePhysicalGitRepo({
       if (branch !== 'main') {
         git(repoDir, ['checkout', '-b', branch]);
       }
-      if (effectiveRemoteUrl) {
+      if (effectiveRemoteUrl && getRemotes(repoDir).length === 0) {
         try {
           git(repoDir, ['remote', 'add', 'origin', effectiveRemoteUrl]);
         } catch (_) {}

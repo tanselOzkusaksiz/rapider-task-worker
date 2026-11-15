@@ -425,8 +425,11 @@ function getWorkspaceReposStatus(options = {}) {
     .map((d) => {
       const repoDir = path.join(workspacesRoot, d.name);
       const branch = fs.existsSync(path.join(repoDir, '.git')) ? getCurrentBranch(repoDir) : 'uninitialized';
+      const sepIdx = d.name.lastIndexOf('--');
+      const extractedProjectId = sepIdx !== -1 ? d.name.slice(sepIdx + 2) : d.name;
       return {
-        projectId: d.name,
+        projectId: extractedProjectId,
+        repoName: d.name,
         branch,
         state: branch === 'idle' ? 'PARKED (idle)' : `ACTIVE (${branch})`,
         repoDir,
