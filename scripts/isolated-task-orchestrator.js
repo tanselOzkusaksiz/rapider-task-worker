@@ -156,7 +156,13 @@ class IsolatedTaskOrchestrator {
   async syncWorkItemDeliverablesAndSummary(
     projectId,
     workItemId,
-    { uploadedRefs = [], status = 'resolved', outcomeSummary = '', publicReplyMarkdown = '' } = {}
+    {
+      uploadedRefs = [],
+      status = 'resolved',
+      outcomeSummary = '',
+      publicReplyMarkdown = '',
+      aiRecommendationMarkdown = '',
+    } = {}
   ) {
     if (this.customApiHandler || this.offline) return;
     try {
@@ -186,11 +192,13 @@ class IsolatedTaskOrchestrator {
       const bodyHadLegacyWorkerBlock = cleanRequestBody !== String(existing.bodyMarkdown || '');
 
       const deliveredOutcomeText = String(publicReplyMarkdown || outcomeSummary || '').trim();
+      const cleanRecommendation = String(aiRecommendationMarkdown || '').trim();
 
       const patchPayload = {
         ...(mergedRefs.length > 0 ? { contextRefs: mergedRefs } : {}),
         ...(bodyHadLegacyWorkerBlock ? { bodyMarkdown: cleanRequestBody } : {}),
         ...(deliveredOutcomeText ? { outcome: deliveredOutcomeText } : {}),
+        ...(cleanRecommendation ? { recommendation: { text: cleanRecommendation } } : {}),
       };
 
       if (Object.keys(patchPayload).length > 0) {
@@ -541,6 +549,13 @@ class IsolatedTaskOrchestrator {
             : `Your task **${workItem.title}** has been processed. Please review the updated Workspace records.`;
       }
 
+      let aiRecommendation = String(
+        outcome.aiRecommendationMarkdown || outcome.recommendation || ''
+      ).trim();
+      if (aiRecommendation && !validatePublicReplyConfidentiality(aiRecommendation).valid) {
+        aiRecommendation = '';
+      }
+
       await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: finalStatus,
         taskCategory: outcome.taskCategory || 'general',
@@ -558,9 +573,9 @@ class IsolatedTaskOrchestrator {
 
       await this.syncWorkItemDeliverablesAndSummary(workItem.projectId, workItem.id, {
         uploadedRefs,
-        status: finalStatus,
         outcomeSummary: publicSummary,
         publicReplyMarkdown: publicReply,
+        aiRecommendationMarkdown: aiRecommendation,
       });
     } catch (err) {
       const safeUserError =

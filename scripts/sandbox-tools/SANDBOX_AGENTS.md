@@ -100,6 +100,7 @@ Before ending your final turn, you **MUST**:
   "status": "resolved",
   "taskCategory": "reporting",
   "outcomeSummary": "One-sentence factual summary of what was completed.",
+  "aiRecommendationMarkdown": "2-4 concise, actionable recommendations or next steps for the user based on the findings.",
   "publicReplyMarkdown": "Concise executive highlights summarizing key metrics, record counts, and the interactive HTML + CSV deliverables.",
   "deliverableFiles": [
     "executive-report.html",
