@@ -4,7 +4,9 @@
   "description": "Standalone Admin Task Management & Monitoring UI for Rapider Isolated Multi-Repo Task Orchestrator.",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "healthcheck": "curl -fsS http://127.0.0.1:4310/healthz"
   },
   "license": "UNLICENSED"
 }
