@@ -122,9 +122,10 @@ function createManagementUiServer(options = {}) {
       const ext = path.extname(fileToServe).toLowerCase();
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
       const content = fs.readFileSync(fileToServe);
+      const isVendorAsset = relPath.startsWith('vendor/');
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+        'Cache-Control': isVendorAsset ? 'public, max-age=3600' : 'no-cache',
       });
       res.end(content);
     } catch (err) {

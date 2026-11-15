@@ -20,20 +20,22 @@ Standalone, zero-external-dependency Admin Web UI and reverse API proxy for moni
    - **Active Workers Heartbeat Bar**: Inspect live worker hostnames, PIDs, OS (`darwin` / `linux`), active task slots, and last heartbeat timestamps.
 
 3. **Tab 1 — Active & Upcoming Queue (`Running` + `Next 20`)**
-   - **Currently In-Progress Tasks**: Live elapsed runtime, Workspace ID, worker ID, mounted repos, and one-click **Kill** (`kill_task` signal).
-   - **Next 20 Queued Tasks**: Ordered deterministically by `(queueOrder ASC, createdDate ASC)`.
+   - **Currently In-Progress Tasks**: Live elapsed runtime, Workspace name, worker ID/PID, mounted repos, **inline verbatim User Request + Task Context preview**, **Context** inspector button, **Logs** button, and one-click **Kill** (`kill_task` signal).
+   - **Next 20 Queued Tasks**: Ordered deterministically by `(queueOrder ASC, createdDate ASC)`, displaying title, verbatim `User asked` prompt, and stripped Markdown description preview.
    - **Queue Ordering Controls**:
-     - **Drag-and-Drop Row Reordering** + `▲` / `▼` step buttons (`POST /task-orchestrator-admin/queue/reorder`).
-     - **Pin to Top** (`POST /task-orchestrator-admin/queue/{id}/move-to-top`) — sets `queueOrder = min(queueOrder) - 1000`.
-     - **+ Add Task to Top of Queue Modal** (`POST /task-orchestrator-admin/tasks`) — select any Workspace (`Project`), specify title, Markdown prompt/instructions, priority, and immediately enqueue at the top (`pinToTop: true`) or bottom of the queue.
+     - **Drag-and-Drop Row Reordering** + `▲` / `▼` step buttons (`PATCH /admin/task-orchestrator/queue/reorder`).
+     - **Pin to Top** (`#1`) — sets `queueOrder = min(queueOrder) - 1000`.
+     - **+ New Task Modal** (`POST /admin/task-orchestrator/queue/tasks`) — select any Workspace (`Project`), specify title, Markdown prompt/instructions, and immediately enqueue at the top (`pinToTop: true`) or bottom of the queue.
 
-4. **Tab 2 — Execution History (`Last 20`) & Private S3 Log Drawer**
-   - **Last 20 Past Executions**: Displays `completed` / `resolved`, `failed`, `killed`, `rejected`, and `pending` runs with exit codes, durations, harvested branch names, commit SHAs, changed file counts, and error codes (`TASK_TIMEOUT`, `OPERATOR_KILL`, `AUTH_SCOPE_DENIED`, etc.).
-   - **Requeue to Top**: Re-run any failed/killed/completed task at the front of the queue with one click (`POST /task-orchestrator-admin/tasks/{id}/requeue`).
-   - **Private S3 Execution Log & Trajectory Drawer**: Fetches private DigitalOcean Spaces objects via `s3-file.service.ts` (`isPublic = false`, with offline `_offline-spaces` fallback):
+4. **Tab 2 — Execution History (`Last 20`) & Slide-Over Task Inspector Drawer**
+   - **Last 20 Past Executions**: Displays `completed` / `resolved`, `failed`, `killed`, `rejected`, `cancelled`, and `pending` runs with verbatim user prompt, outcome preview, durations, harvested branch names, and deliverable file counts.
+   - **Re-queue #1**: Re-run any failed/killed/completed task at the front of the queue with one click (`POST /admin/task-orchestrator/tasks/{id}/control`).
+   - **Slide-Over Task Inspector & Private S3 Log Drawer**: Clicking any task title or **Context** button opens directly to **`Request & Context`**, alongside private DigitalOcean Spaces log tabs fetched via `s3-file.service.ts` (`isPublic = false`, with offline `_offline-spaces` fallback):
+     - **`Request & Context`**: Metadata strip, verbatim **Original User Request** callout, synthesized summary/prior step context, rendered GFM Markdown `bodyMarkdown` (headings, blockquotes, lists, tables, code), execution outcome, and attached deliverables.
      - **`.log`**: Raw `stdout` / `stderr` execution output.
      - **`.jsonl`**: Structured `agy --output-format stream-json` trajectory stream.
      - **`.patch`**: Harvested multi-repo git diff patches (`git format-patch`).
+     - **`Live Tail`**: Real-time rolling MongoDB `logTail`.
 
 5. **100% Offline-Ready Assets**
    - Bundles Tailwind CSS (`public/vendor/tailwindcss/tailwind.js`) and FontAwesome (`public/vendor/fontawesome/`) locally so the UI works seamlessly on air-gapped networks or without internet access.

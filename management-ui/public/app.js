@@ -26,7 +26,7 @@
       open: false,
       workItemId: null,
       title: '',
-      type: 'log',
+      type: 'details',
     },
   };
 
@@ -68,18 +68,264 @@
     const styles = {
       running: 'bg-blue-100 text-blue-800 border-blue-200',
       staging: 'bg-indigo-100 text-indigo-800 border-indigo-200',
-      queued: 'bg-amber-50 text-amber-800 border-amber-200',
-      open: 'bg-slate-100 text-slate-700 border-slate-200',
+      claimed: 'bg-blue-100 text-blue-800 border-blue-200',
+      harvesting: 'bg-blue-100 text-blue-800 border-blue-200',
+      queued: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+      open: 'bg-indigo-50 text-indigo-800 border-indigo-200',
       resolved: 'bg-emerald-100 text-emerald-800 border-emerald-200',
       completed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-      pending: 'bg-purple-100 text-purple-800 border-purple-200',
+      pending: 'bg-amber-100 text-amber-800 border-amber-200',
       failed: 'bg-red-100 text-red-800 border-red-200',
       killed: 'bg-red-100 text-red-800 border-red-200',
-      rejected: 'bg-orange-100 text-orange-800 border-orange-200',
-      cancelled: 'bg-slate-100 text-slate-500 border-slate-200',
+      rejected: 'bg-red-100 text-red-800 border-red-200',
+      cancelled: 'bg-slate-100 text-slate-600 border-slate-200',
     };
     const cls = styles[s] || 'bg-slate-100 text-slate-700 border-slate-200';
     return `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${cls}">${escapeHtml(s.toUpperCase())}</span>`;
+  }
+
+  /**
+   * Strips Markdown tokens into clean readable plain text for compact previews.
+   */
+  function stripMarkdownText(raw, maxChars = 180) {
+    const text = String(raw == null ? '' : raw)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/^#{1,6}\s*(Task Description|Original User Request)\s*$/gim, '')
+      .replace(/^\|?[\s:-]+\|[\s|:-]*$/gm, ' ')
+      .replace(/\|/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/!\[[^\]]*]\([^)]*\)/g, '')
+      .replace(/\[([^\]]+)]\([^)]*\)/g, '$1')
+      .replace(/^[#>*\-\s]+/gm, '')
+      .replace(/[*_~]+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!maxChars || text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars - 1).trimEnd()}…`;
+  }
+
+  /**
+   * Extracts the verbatim user prompt (`source.exactUserRequest`, `facts`, or `## Original User Request`).
+   */
+  function extractExactUserRequest(item) {
+    if (!item || typeof item !== 'object') return '';
+    const src = item.source && typeof item.source === 'object' ? item.source : {};
+    if (typeof src.exactUserRequest === 'string' && src.exactUserRequest.trim()) {
+      return src.exactUserRequest.trim();
+    }
+    if (Array.isArray(item.facts)) {
+      const fact = item.facts.find((f) => f && f.key === 'exactUserRequest' && f.value);
+      if (fact) return String(fact.value).trim();
+    }
+    const body = String(item.bodyMarkdown || '');
+    const match = body.match(
+      /##\s+Original User Request\s*\n+((?:>\s?.*(?:\n|$))+)/i
+    );
+    if (match && match[1]) {
+      return match[1]
+        .split('\n')
+        .map((l) => l.replace(/^>\s?/, ''))
+        .join('\n')
+        .trim();
+    }
+    return '';
+  }
+
+  /**
+   * Extracts a clean description preview (preferring `summary` or the `## Task Description` section).
+   */
+  function extractTaskDescriptionPreview(item, maxChars = 180) {
+    if (!item || typeof item !== 'object') return '';
+    const body = String(item.bodyMarkdown || '');
+    const descMatch = body.match(/##\s+Task Description\s*\n+([\s\S]*?)(?=\n+##\s+|\n+---\s*\n|$)/i);
+    if (descMatch && descMatch[1] && descMatch[1].trim()) {
+      return stripMarkdownText(descMatch[1], maxChars);
+    }
+    if (item.summary && String(item.summary).trim() && item.summary !== item.title) {
+      return stripMarkdownText(item.summary, maxChars);
+    }
+    return stripMarkdownText(body || item.summary || '', maxChars);
+  }
+
+  /**
+   * XSS-safe GFM Markdown renderer supporting headings, blockquotes, lists, tables,
+   * fenced code blocks, inline code, links, bold/italic, and horizontal rules.
+   */
+  function renderInlineMarkdown(escapedLine) {
+    const codeTokens = [];
+    let out = escapedLine.replace(/`([^`]+)`/g, (_, code) => {
+      const idx = codeTokens.push(`<code>${code}</code>`) - 1;
+      return `@@INLINECODE_${idx}@@`;
+    });
+
+    out = out.replace(
+      /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
+
+    out = out.replace(/@@INLINECODE_(\d+)@@/g, (_, idx) => codeTokens[Number(idx)] || '');
+    return out;
+  }
+
+  function renderSafeMarkdown(rawMarkdown) {
+    const text = String(rawMarkdown == null ? '' : rawMarkdown).replace(/\r\n/g, '\n').trim();
+    if (!text) {
+      return '<p class="text-slate-400 italic">No markdown description provided.</p>';
+    }
+
+    const lines = text.split('\n');
+    const blocks = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        i += 1;
+        continue;
+      }
+
+      // Fenced code block ```
+      if (trimmed.startsWith('```')) {
+        const codeLines = [];
+        i += 1;
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          codeLines.push(escapeHtml(lines[i]));
+          i += 1;
+        }
+        if (i < lines.length) i += 1;
+        blocks.push(`<pre><code>${codeLines.join('\n')}</code></pre>`);
+        continue;
+      }
+
+      // Horizontal rule
+      if (/^(---+|\*\*\*+|___+)$/.test(trimmed)) {
+        blocks.push('<hr />');
+        i += 1;
+        continue;
+      }
+
+      // Heading # .. ####
+      const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+      if (headingMatch) {
+        const level = headingMatch[1].length;
+        blocks.push(
+          `<h${level}>${renderInlineMarkdown(escapeHtml(headingMatch[2]))}</h${level}>`
+        );
+        i += 1;
+        continue;
+      }
+
+      // GFM Table
+      if (
+        trimmed.includes('|') &&
+        i + 1 < lines.length &&
+        /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])
+      ) {
+        const parseCells = (rowStr) =>
+          rowStr
+            .trim()
+            .replace(/^\|/, '')
+            .replace(/\|$/, '')
+            .split('|')
+            .map((c) => renderInlineMarkdown(escapeHtml(c.trim())));
+
+        const headers = parseCells(lines[i]);
+        i += 2; // skip header + separator
+        const bodyRows = [];
+        while (i < lines.length && lines[i].trim().includes('|') && lines[i].trim() !== '') {
+          bodyRows.push(parseCells(lines[i]));
+          i += 1;
+        }
+        const thead = `<thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>`;
+        const tbody = `<tbody>${bodyRows
+          .map(
+            (r) =>
+              `<tr>${headers
+                .map((_, colIdx) => `<td>${r[colIdx] !== undefined ? r[colIdx] : ''}</td>`)
+                .join('')}</tr>`
+          )
+          .join('')}</tbody>`;
+        blocks.push(`<div class="task-md-table-wrap"><table>${thead}${tbody}</table></div>`);
+        continue;
+      }
+
+      // Blockquote >
+      if (trimmed.startsWith('>')) {
+        const quoteLines = [];
+        while (i < lines.length && lines[i].trim().startsWith('>')) {
+          quoteLines.push(escapeHtml(lines[i].trim().replace(/^>\s?/, '')));
+          i += 1;
+        }
+        blocks.push(
+          `<blockquote><p>${quoteLines.map((ql) => renderInlineMarkdown(ql)).join('<br />')}</p></blockquote>`
+        );
+        continue;
+      }
+
+      // Unordered list
+      if (/^[-*+]\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
+          const itemText = lines[i].trim().replace(/^[-*+]\s+/, '');
+          items.push(`<li>${renderInlineMarkdown(escapeHtml(itemText))}</li>`);
+          i += 1;
+        }
+        blocks.push(`<ul>${items.join('')}</ul>`);
+        continue;
+      }
+
+      // Ordered list
+      if (/^\d+\.\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+          const itemText = lines[i].trim().replace(/^\d+\.\s+/, '');
+          items.push(`<li>${renderInlineMarkdown(escapeHtml(itemText))}</li>`);
+          i += 1;
+        }
+        blocks.push(`<ol>${items.join('')}</ol>`);
+        continue;
+      }
+
+      // Paragraph
+      const paraLines = [];
+      while (
+        i < lines.length &&
+        lines[i].trim() !== '' &&
+        !lines[i].trim().startsWith('```') &&
+        !lines[i].trim().startsWith('>') &&
+        !/^(#{1,4})\s+/.test(lines[i].trim()) &&
+        !/^[-*+]\s+/.test(lines[i].trim()) &&
+        !/^\d+\.\s+/.test(lines[i].trim()) &&
+        !/^(---+|\*\*\*+|___+)$/.test(lines[i].trim())
+      ) {
+        paraLines.push(renderInlineMarkdown(escapeHtml(lines[i].trim())));
+        i += 1;
+      }
+      blocks.push(`<p>${paraLines.join(' ')}</p>`);
+    }
+
+    return blocks.join('\n');
+  }
+
+  function findTaskById(workItemId) {
+    if (!workItemId) return null;
+    const active = Array.isArray(state.overview?.activeTasks)
+      ? state.overview.activeTasks
+      : [];
+    const queued = Array.isArray(state.overview?.nextQueue)
+      ? state.overview.nextQueue
+      : [];
+    const past = Array.isArray(state.history) ? state.history : [];
+    return (
+      active.find((t) => t.id === workItemId) ||
+      queued.find((t) => t.id === workItemId) ||
+      past.find((t) => t.id === workItemId) ||
+      null
+    );
   }
 
   function showToast(message, variant = 'info') {
@@ -261,6 +507,10 @@
       renderHistoryTable();
       populateWorkspaceDropdown();
 
+      if (state.logViewer.open && state.logViewer.type === 'details') {
+        renderDrawerTaskDetails();
+      }
+
       document.getElementById('lastSyncedLabel').textContent =
         `Synced ${new Date().toLocaleTimeString()}`;
     } catch (err) {
@@ -365,6 +615,8 @@
                 `<span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px]">${escapeHtml(r.mountRelPath || r.repoKey)}</span>`
             )
             .join(' ');
+          const exactPrompt = extractExactUserRequest(t);
+          const descPreview = extractTaskDescriptionPreview(t, 220);
           const tail = escapeHtml(
             (run.logTail || 'Staging sandbox...').trim().split('\n').slice(-5).join('\n')
           );
@@ -379,7 +631,7 @@
                 </div>
                 <button
                   type="button"
-                  data-open-logs="${escapeHtml(t.id)}"
+                  data-open-details="${escapeHtml(t.id)}"
                   data-task-title="${escapeHtml(t.title)}"
                   class="font-semibold text-blue-600 hover:underline text-sm text-left cursor-pointer"
                 >
@@ -391,6 +643,15 @@
                 </div>
               </div>
               <div class="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  data-open-details="${escapeHtml(t.id)}"
+                  data-task-title="${escapeHtml(t.title)}"
+                  class="rounded-lg border border-blue-200 bg-white hover:bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 cursor-pointer"
+                  title="View full user request &amp; task context"
+                >
+                  <i class="fas fa-align-left mr-1"></i>Context
+                </button>
                 <button
                   type="button"
                   data-open-logs="${escapeHtml(t.id)}"
@@ -409,6 +670,27 @@
                 </button>
               </div>
             </div>
+            ${
+              exactPrompt || descPreview
+                ? `<div class="rounded-lg border border-slate-200 bg-white/90 px-3 py-2 text-xs space-y-1">
+                    ${
+                      exactPrompt
+                        ? `<div>
+                            <span class="font-semibold text-[10px] uppercase tracking-wider text-blue-700 mr-1.5"><i class="fas fa-comment-dots mr-1"></i>User Asked:</span>
+                            <span class="text-slate-800 italic">&ldquo;${escapeHtml(exactPrompt)}&rdquo;</span>
+                          </div>`
+                        : ''
+                    }
+                    ${
+                      descPreview && descPreview !== exactPrompt
+                        ? `<div class="text-[11px] text-slate-600 line-clamp-2">
+                            <span class="font-semibold text-slate-700">Task Context:</span> ${escapeHtml(descPreview)}
+                          </div>`
+                        : ''
+                    }
+                  </div>`
+                : ''
+            }
             ${repoChips ? `<div class="flex flex-wrap gap-1">${repoChips}</div>` : ''}
             <pre class="terminal-pre rounded-lg p-2.5 max-h-28 overflow-auto whitespace-pre-wrap m-0">${tail}</pre>
           </div>`;
@@ -453,6 +735,8 @@
           const hay = [
             item.title,
             item.summary,
+            item.bodyMarkdown,
+            extractExactUserRequest(item),
             item.workspaceName,
             item.status,
             item.id,
@@ -474,6 +758,9 @@
 
     tbody.innerHTML = filtered
       .map((item) => {
+        const exactPrompt = extractExactUserRequest(item);
+        const descPreview = extractTaskDescriptionPreview(item, 170);
+
         return `<tr
           draggable="${term ? 'false' : 'true'}"
           data-queue-row-id="${escapeHtml(item.id)}"
@@ -488,14 +775,21 @@
           <td class="py-3 px-4">
             <button
               type="button"
-              data-open-logs="${escapeHtml(item.id)}"
+              data-open-details="${escapeHtml(item.id)}"
               data-task-title="${escapeHtml(item.title)}"
               class="font-semibold text-blue-600 hover:underline cursor-pointer text-left block"
             >
               ${escapeHtml(item.title)}
             </button>
+            ${
+              exactPrompt
+                ? `<div class="text-[11px] text-slate-700 line-clamp-1 mt-0.5">
+                    <span class="font-semibold text-blue-700">User asked:</span> &ldquo;${escapeHtml(exactPrompt)}&rdquo;
+                  </div>`
+                : ''
+            }
             <div class="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
-              ${escapeHtml(item.summary || item.bodyMarkdown || '')}
+              ${escapeHtml(descPreview || '—')}
             </div>
           </td>
           <td class="py-3 px-4 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
@@ -503,6 +797,15 @@
           <td class="py-3 px-4 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(item.occurredAt || item.createdDate))}</td>
           <td class="py-3 px-4 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1">
+              <button
+                type="button"
+                data-open-details="${escapeHtml(item.id)}"
+                data-task-title="${escapeHtml(item.title)}"
+                title="Inspect user request &amp; task context"
+                class="rounded border border-slate-200 bg-white hover:bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700 cursor-pointer"
+              >
+                <i class="fas fa-align-left mr-0.5"></i>Context
+              </button>
               <button
                 type="button"
                 data-reorder-op="pin_top"
@@ -557,6 +860,9 @@
       : rawHistory.filter((item) => {
           const hay = [
             item.title,
+            item.summary,
+            item.bodyMarkdown,
+            extractExactUserRequest(item),
             item.outcome,
             item.workspaceName,
             item.status,
@@ -582,24 +888,38 @@
         const run = item.execution || {};
         const filesCount = Array.isArray(run.attachedFiles)
           ? run.attachedFiles.length
-          : 0;
+          : Array.isArray(item.contextRefs)
+            ? item.contextRefs.length
+            : 0;
         const branches = Array.isArray(run.pushedBranches)
           ? run.pushedBranches.filter((b) => b && b.branch)
           : [];
         const duration = run.durationMs ? formatDuration(run.durationMs) : '';
+        const exactPrompt = extractExactUserRequest(item);
+        const outcomeText = stripMarkdownText(
+          item.outcome || run.resultSummary || run.errorReason || '',
+          160
+        );
 
         return `<tr class="hover:bg-slate-50/90 transition">
           <td class="py-3 px-4">
             <button
               type="button"
-              data-open-logs="${escapeHtml(item.id)}"
+              data-open-details="${escapeHtml(item.id)}"
               data-task-title="${escapeHtml(item.title)}"
               class="font-semibold text-blue-600 hover:underline cursor-pointer text-left block"
             >
               ${escapeHtml(item.title)}
             </button>
+            ${
+              exactPrompt
+                ? `<div class="text-[11px] text-slate-700 line-clamp-1 mt-0.5">
+                    <span class="font-semibold text-blue-700">User asked:</span> &ldquo;${escapeHtml(exactPrompt)}&rdquo;
+                  </div>`
+                : ''
+            }
             <div class="text-[11px] text-slate-500 line-clamp-2 mt-0.5">
-              ${escapeHtml(item.outcome || run.resultSummary || run.errorReason || '—')}
+              ${escapeHtml(outcomeText || extractTaskDescriptionPreview(item, 150) || '—')}
             </div>
           </td>
           <td class="py-3 px-4 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
@@ -623,6 +943,14 @@
           <td class="py-3 px-4 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(run.finishedAt || item.updatedDate || item.createdDate))}</td>
           <td class="py-3 px-4 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1.5">
+              <button
+                type="button"
+                data-open-details="${escapeHtml(item.id)}"
+                data-task-title="${escapeHtml(item.title)}"
+                class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 cursor-pointer"
+              >
+                <i class="fas fa-align-left mr-1"></i>Context
+              </button>
               <button
                 type="button"
                 data-open-logs="${escapeHtml(item.id)}"
@@ -663,18 +991,11 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Private S3 Log / JSONL / Patch Inspector Drawer
+  // Slide-Over Task Request/Context & Private S3 Log Inspector Drawer
   // ---------------------------------------------------------------------------
-  async function loadAndRenderDrawerLog() {
-    const { workItemId, type } = state.logViewer;
-    if (!workItemId) return;
-
-    const pre = document.getElementById('logContentPre');
-    const badge = document.getElementById('logSourceBadge');
-    pre.textContent = 'Fetching private execution artifact via s3-file.service.ts...';
-
+  function syncDrawerTabStyles(selectedType) {
     document.querySelectorAll('.log-tab-btn').forEach((btn) => {
-      const isSelected = btn.getAttribute('data-log-type') === type;
+      const isSelected = btn.getAttribute('data-log-type') === selectedType;
       if (isSelected) {
         btn.className = 'log-tab-btn px-3 py-1 rounded-md text-xs font-semibold bg-blue-600 !text-white text-white cursor-pointer';
         btn.style.setProperty('color', '#ffffff', 'important');
@@ -683,6 +1004,220 @@
         btn.style.removeProperty('color');
       }
     });
+  }
+
+  function renderDrawerTaskDetails() {
+    const { workItemId } = state.logViewer;
+    const panel = document.getElementById('taskDetailsPanel');
+    const pre = document.getElementById('logContentPre');
+    const badge = document.getElementById('logSourceBadge');
+
+    pre.classList.add('hidden');
+    panel.classList.remove('hidden');
+
+    const item = findTaskById(workItemId);
+    if (!item) {
+      badge.textContent = 'Source: WorkItem';
+      panel.innerHTML = `<div class="rounded-xl border border-slate-200 bg-white p-5 text-xs text-slate-500">
+        Task details are not currently loaded in memory. Click <strong>Refresh</strong> above to reload.
+      </div>`;
+      return;
+    }
+
+    const run = item.execution || {};
+    const src = item.source && typeof item.source === 'object' ? item.source : {};
+    const exactPrompt = extractExactUserRequest(item);
+    const priorContext =
+      typeof src.priorStepFindingsSummary === 'string' && src.priorStepFindingsSummary.trim()
+        ? src.priorStepFindingsSummary.trim()
+        : '';
+    const attachedFiles =
+      Array.isArray(run.attachedFiles) && run.attachedFiles.length > 0
+        ? run.attachedFiles
+        : Array.isArray(item.contextRefs)
+          ? item.contextRefs
+          : [];
+    const stagedRepos = Array.isArray(run.stagedRepos) ? run.stagedRepos : [];
+    const pushedBranches = Array.isArray(run.pushedBranches)
+      ? run.pushedBranches.filter((b) => b && b.branch)
+      : [];
+
+    badge.textContent = `Workspace: ${item.workspaceName || item.projectId || '—'}`;
+
+    panel.innerHTML = `
+      <!-- Metadata Summary Card -->
+      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            ${statusBadgeHtml(run.status || item.status)}
+            <span class="text-xs font-semibold text-slate-800">${escapeHtml(item.workspaceName || 'Workspace')}</span>
+            ${
+              src.description || src.type
+                ? `<span class="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">${escapeHtml(src.description || src.type)}</span>`
+                : ''
+            }
+          </div>
+          <span class="text-[11px] font-mono text-slate-400">Priority P${escapeHtml(item.priority ?? 2)}</span>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-100 text-[11px]">
+          <div>
+            <div class="text-slate-400 uppercase font-semibold text-[10px]">Queued / Created</div>
+            <div class="text-slate-700 font-medium mt-0.5">${escapeHtml(formatDateTime(item.occurredAt || item.createdDate))}</div>
+          </div>
+          <div>
+            <div class="text-slate-400 uppercase font-semibold text-[10px]">Started</div>
+            <div class="text-slate-700 font-medium mt-0.5">${escapeHtml(formatDateTime(run.startedAt))}</div>
+          </div>
+          <div>
+            <div class="text-slate-400 uppercase font-semibold text-[10px]">Finished / Duration</div>
+            <div class="text-slate-700 font-medium mt-0.5">
+              ${run.finishedAt ? escapeHtml(formatDateTime(run.finishedAt)) : '—'}
+              ${run.durationMs ? ` (${escapeHtml(formatDuration(run.durationMs))})` : ''}
+            </div>
+          </div>
+          <div>
+            <div class="text-slate-400 uppercase font-semibold text-[10px]">Worker</div>
+            <div class="text-slate-700 font-mono truncate mt-0.5" title="${escapeHtml(run.workerId || '—')}">${escapeHtml(run.workerId || '—')}</div>
+          </div>
+        </div>
+
+        ${
+          stagedRepos.length > 0 || pushedBranches.length > 0
+            ? `<div class="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span class="text-slate-400 font-semibold uppercase text-[10px] mr-1">Repositories:</span>
+                ${stagedRepos
+                  .map(
+                    (r) =>
+                      `<span class="rounded bg-slate-100 border border-slate-200 px-2 py-0.5 font-mono text-[10px] text-slate-700">${escapeHtml(r.mountRelPath || r.repoKey || r.repoName)}${r.branch ? ` (${escapeHtml(r.branch)})` : ''}</span>`
+                  )
+                  .join('')}
+                ${pushedBranches
+                  .map(
+                    (b) =>
+                      `<span class="rounded bg-emerald-50 border border-emerald-200 px-2 py-0.5 font-mono text-[10px] text-emerald-800"><i class="fas fa-code-branch mr-1"></i>${escapeHtml(b.branch)}</span>`
+                  )
+                  .join('')}
+              </div>`
+            : ''
+        }
+      </section>
+
+      ${
+        exactPrompt
+          ? `<section class="rounded-xl border border-blue-200 bg-blue-50/70 p-4 shadow-2xs">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-blue-800 mb-1.5">
+                <i class="fas fa-comment-dots mr-1"></i>Original User Request (Verbatim)
+              </div>
+              <div class="text-sm text-slate-900 font-medium leading-relaxed whitespace-pre-wrap">${escapeHtml(exactPrompt)}</div>
+            </section>`
+          : ''
+      }
+
+      ${
+        (item.summary && item.summary !== item.title) || item.expectedOutcome || priorContext
+          ? `<section class="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs space-y-2.5 text-xs">
+              ${
+                item.summary && item.summary !== item.title
+                  ? `<div>
+                      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Synthesized Task Summary</div>
+                      <div class="text-slate-700 leading-relaxed">${escapeHtml(item.summary)}</div>
+                    </div>`
+                  : ''
+              }
+              ${
+                item.expectedOutcome
+                  ? `<div>
+                      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Expected Outcome</div>
+                      <div class="text-slate-700 leading-relaxed">${escapeHtml(item.expectedOutcome)}</div>
+                    </div>`
+                  : ''
+              }
+              ${
+                priorContext
+                  ? `<div>
+                      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Prior Step Context</div>
+                      <div class="text-slate-700 leading-relaxed whitespace-pre-wrap">${escapeHtml(priorContext)}</div>
+                    </div>`
+                  : ''
+              }
+            </section>`
+          : ''
+      }
+
+      <!-- Full Task Description, Context & Worker Update (Rendered Markdown) -->
+      <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-3">
+          <i class="fas fa-file-alt mr-1"></i>Full Task Description &amp; Context
+        </div>
+        <div class="task-md">
+          ${renderSafeMarkdown(item.bodyMarkdown || item.summary || '')}
+        </div>
+      </section>
+
+      ${
+        item.outcome || run.resultSummary || run.errorReason
+          ? `<section class="rounded-xl border ${
+              run.errorReason && !item.outcome
+                ? 'border-red-200 bg-red-50/60'
+                : 'border-emerald-200 bg-emerald-50/50'
+            } p-4 shadow-2xs">
+              <div class="text-[11px] font-bold uppercase tracking-wider ${
+                run.errorReason && !item.outcome ? 'text-red-800' : 'text-emerald-800'
+              } mb-1.5">
+                <i class="fas ${
+                  run.errorReason && !item.outcome ? 'fa-exclamation-triangle' : 'fa-check-circle'
+                } mr-1"></i>Execution Outcome
+              </div>
+              <div class="task-md">
+                ${renderSafeMarkdown(item.outcome || run.resultSummary || run.errorReason || '')}
+              </div>
+            </section>`
+          : ''
+      }
+
+      ${
+        attachedFiles.length > 0
+          ? `<section class="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">
+                <i class="fas fa-paperclip mr-1"></i>Attached Deliverables (${attachedFiles.length})
+              </div>
+              <div class="flex flex-wrap gap-2">
+                ${attachedFiles
+                  .map((f) => {
+                    const name = f.name || f.fileName || f.title || f.id || 'Deliverable';
+                    const folder = f.folderPath || '/Task Outputs';
+                    return `<span class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700" title="${escapeHtml(`${folder}/${name}`)}">
+                      <i class="fas fa-file-download text-blue-600"></i>
+                      <span class="font-medium">${escapeHtml(name)}</span>
+                    </span>`;
+                  })
+                  .join('')}
+              </div>
+            </section>`
+          : ''
+      }
+    `;
+  }
+
+  async function loadAndRenderDrawerLog() {
+    const { workItemId, type } = state.logViewer;
+    if (!workItemId) return;
+
+    syncDrawerTabStyles(type);
+
+    if (type === 'details') {
+      renderDrawerTaskDetails();
+      return;
+    }
+
+    const panel = document.getElementById('taskDetailsPanel');
+    const pre = document.getElementById('logContentPre');
+    const badge = document.getElementById('logSourceBadge');
+
+    panel.classList.add('hidden');
+    pre.classList.remove('hidden');
+    pre.textContent = 'Fetching private execution artifact via s3-file.service.ts...';
 
     try {
       const data = await apiFetch(
@@ -697,14 +1232,16 @@
     }
   }
 
-  function openLogDrawer(workItemId, title) {
+  function openLogDrawer(workItemId, title, initialType = 'details') {
+    const task = findTaskById(workItemId);
     state.logViewer = {
       open: true,
       workItemId,
-      title: title || workItemId,
-      type: 'log',
+      title: title || task?.title || workItemId,
+      type: initialType || 'details',
     };
-    document.getElementById('logDrawerTitle').textContent = title || 'Task Logs';
+    document.getElementById('logDrawerTitle').textContent =
+      title || task?.title || 'Task Details & Execution Logs';
     document.getElementById('logDrawerSubtitle').textContent = `Task ID: ${workItemId}`;
     document.getElementById('logDrawerBackdrop').classList.remove('hidden');
     loadAndRenderDrawerLog();
@@ -858,12 +1395,27 @@
       }
     });
 
-    // Log Drawer events
+    // Drawer events
     document.getElementById('closeLogDrawerBtn').addEventListener('click', closeLogDrawer);
-    document.getElementById('refreshLogBtn').addEventListener('click', loadAndRenderDrawerLog);
+    document.getElementById('logDrawerBackdrop').addEventListener('click', (ev) => {
+      if (ev.target.id === 'logDrawerBackdrop') {
+        closeLogDrawer();
+      }
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && state.logViewer.open) {
+        closeLogDrawer();
+      }
+    });
+    document.getElementById('refreshLogBtn').addEventListener('click', async () => {
+      if (state.logViewer.type === 'details') {
+        await refreshAllData({ silent: true });
+      }
+      await loadAndRenderDrawerLog();
+    });
     document.querySelectorAll('.log-tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        state.logViewer.type = btn.getAttribute('data-log-type') || 'log';
+        state.logViewer.type = btn.getAttribute('data-log-type') || 'details';
         loadAndRenderDrawerLog();
       });
     });
@@ -885,11 +1437,22 @@
         return;
       }
 
+      const detailsBtn = ev.target.closest('[data-open-details]');
+      if (detailsBtn) {
+        openLogDrawer(
+          detailsBtn.getAttribute('data-open-details'),
+          detailsBtn.getAttribute('data-task-title'),
+          'details'
+        );
+        return;
+      }
+
       const logBtn = ev.target.closest('[data-open-logs]');
       if (logBtn) {
         openLogDrawer(
           logBtn.getAttribute('data-open-logs'),
-          logBtn.getAttribute('data-task-title')
+          logBtn.getAttribute('data-task-title'),
+          'log'
         );
         return;
       }
@@ -1048,4 +1611,3 @@
     }
   });
 })();
-
