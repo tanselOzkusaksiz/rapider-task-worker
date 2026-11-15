@@ -177,23 +177,151 @@ function normalizeLf(text) {
   return String(text || '').replace(/\r\n/g, '\n').trimEnd() + '\n';
 }
 
-const NON_INTERACTIVE_GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_MERGE_AUTOEDIT: 'no',
-};
+function buildNonInteractiveGitEnv() {
+  const env = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_MERGE_AUTOEDIT: 'no',
+  };
+  const runtimeToken = String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim();
+  if (runtimeToken) {
+    if (!env.GH_TOKEN) {
+      env.GH_TOKEN = runtimeToken;
+    }
+    const prevCount = parseInt(env.GIT_CONFIG_COUNT || '0', 10) || 0;
+    const basicToken = Buffer.from(`x-access-token:${runtimeToken}`, 'utf8').toString('base64');
+    env.GIT_CONFIG_COUNT = String(prevCount + 1);
+    env[`GIT_CONFIG_KEY_${prevCount}`] = 'http.https://github.com/.extraheader';
+    env[`GIT_CONFIG_VALUE_${prevCount}`] = `AUTHORIZATION: basic ${basicToken}`;
+  }
+  return env;
+}
+
+function readNonSecretEnvKeyFromFiles(targetKey) {
+  const candidateFiles = [
+    path.resolve(WORKER_ROOT, '.env'),
+    path.resolve(WORKER_ROOT, '../rapider-server/rappider/.server.env'),
+    path.resolve(WORKER_ROOT, '../rapider-server/.env'),
+  ];
+  for (const fp of candidateFiles) {
+    try {
+      if (!fs.existsSync(fp)) continue;
+      const lines = fs.readFileSync(fp, 'utf8').split(/\r?\n/);
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const eqIdx = line.indexOf('=');
+        if (eqIdx <= 0) continue;
+        const k = line.slice(0, eqIdx).trim();
+        if (k !== targetKey) continue;
+        let val = line.slice(eqIdx + 1).trim();
+        if (
+          (val.startsWith('"') && val.endsWith('"')) ||
+          (val.startsWith("'") && val.endsWith("'"))
+        ) {
+          val = val.slice(1, -1).trim();
+        }
+        if (val) return val;
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+function resolveGithubOwner({ explicitOwner = '', allowEnvFileFallback = true } = {}) {
+  const direct = String(
+    explicitOwner || process.env.RAPIDER_GITHUB_OWNER || process.env.GITHUB_OWNER || ''
+  ).trim();
+  if (direct) return direct;
+  if (!allowEnvFileFallback) return '';
+  return (
+    readNonSecretEnvKeyFromFiles('RAPIDER_GITHUB_OWNER') ||
+    readNonSecretEnvKeyFromFiles('GITHUB_OWNER') ||
+    ''
+  );
+}
+
+function buildGithubRemoteUrl(githubOwner, repoName) {
+  const safeOwner = String(githubOwner || '').trim();
+  const safeRepo = String(repoName || '').trim();
+  if (!safeOwner || !safeRepo) return null;
+  if (String(process.env.RAPIDER_GIT_PROTOCOL || '').trim().toLowerCase() === 'ssh') {
+    return `git@github.com:${safeOwner}/${safeRepo}.git`;
+  }
+  return `https://github.com/${safeOwner}/${safeRepo}.git`;
+}
 
 function git(cwd, args, opts = {}) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     timeout: opts.timeout || 60000,
-    env: NON_INTERACTIVE_GIT_ENV,
+    env: buildNonInteractiveGitEnv(),
     stdio:
       opts.stdio ||
       (opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe']),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
   }).trim();
+}
+
+function hasMergeBase(cwd, refA, refB) {
+  try {
+    execFileSync('git', ['merge-base', refA, refB], {
+      cwd,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isCommitAncestor(cwd, ancestorRef, descendantRef) {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestorRef, descendantRef], {
+      cwd,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveRemoteDefaultBranchRef(cwd) {
+  try {
+    const sym = git(cwd, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+    if (sym && sym !== 'refs/remotes/origin/idle' && refExists(cwd, sym)) {
+      return sym;
+    }
+  } catch (_) {}
+  if (refExists(cwd, 'refs/remotes/origin/main')) {
+    return 'refs/remotes/origin/main';
+  }
+  if (refExists(cwd, 'refs/remotes/origin/master')) {
+    return 'refs/remotes/origin/master';
+  }
+  try {
+    const refsOut = git(cwd, [
+      'for-each-ref',
+      '--sort=-committerdate',
+      '--format=%(refname)',
+      'refs/remotes/origin/',
+    ]);
+    const candidates = refsOut
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(
+        (r) =>
+          r &&
+          r !== 'refs/remotes/origin/HEAD' &&
+          r !== 'refs/remotes/origin/idle'
+      );
+    if (candidates.length > 0) {
+      return candidates[0];
+    }
+  } catch (_) {}
+  return null;
 }
 
 function refExists(cwd, ref) {
@@ -292,14 +420,15 @@ function ensureRemoteGithubRepoCli({
     return { created: false, remoteUrl: null };
   }
 
+  const gitEnv = buildNonInteractiveGitEnv();
   const checkRes = spawnSync('gh', ['api', `/repos/${safeOwner}/${safeRepo}`], {
     encoding: 'utf8',
     timeout: 20000,
-    env: NON_INTERACTIVE_GIT_ENV,
+    env: gitEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (checkRes.status === 0) {
-    return { created: false, remoteUrl: `git@github.com:${safeOwner}/${safeRepo}.git` };
+    return { created: false, remoteUrl: buildGithubRemoteUrl(safeOwner, safeRepo) };
   }
 
   const createArgs = ['repo', 'create', `${safeOwner}/${safeRepo}`, '--private'];
@@ -314,14 +443,14 @@ function ensureRemoteGithubRepoCli({
   const createRes = spawnSync('gh', createArgs, {
     encoding: 'utf8',
     timeout: 45000,
-    env: NON_INTERACTIVE_GIT_ENV,
+    env: gitEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   return {
     created: createRes.status === 0,
     remoteUrl:
-      createRes.status === 0 ? `git@github.com:${safeOwner}/${safeRepo}.git` : null,
+      createRes.status === 0 ? buildGithubRemoteUrl(safeOwner, safeRepo) : null,
   };
 }
 
@@ -343,6 +472,8 @@ function preparePhysicalGitRepo({
   workspaceKey = '',
   repoName = null,
   remoteUrl = null,
+  githubOwner: explicitGithubOwner = '',
+  allowEnvFileOwnerFallback = true,
   targetBranch = 'main',
   workspacesRoot = DEFAULT_WORKSPACES_ROOT,
   codeGenReposRoot = process.env.RAPIDER_CODEGEN_REPOS_DIR || null,
@@ -384,19 +515,19 @@ function preparePhysicalGitRepo({
   candidateDirs.push(legacyBareIdDir);
 
   let repoDir = candidateDirs.find((dir) => fs.existsSync(path.join(dir, '.git'))) || null;
-  let existedOnDisk = Boolean(repoDir);
+  const existedOnDisk = Boolean(repoDir);
   let clonedFromRemote = false;
   let pulledFromRemote = false;
   let createdLocalRepo = false;
   let createdRemoteRepo = false;
 
-  const githubOwner =
-    process.env.RAPIDER_GITHUB_OWNER || process.env.GITHUB_OWNER || '';
+  const gitEnv = buildNonInteractiveGitEnv();
+  const githubOwner = resolveGithubOwner({
+    explicitOwner: explicitGithubOwner,
+    allowEnvFileFallback: allowEnvFileOwnerFallback,
+  });
   let effectiveRemoteUrl =
-    remoteUrl ||
-    (githubOwner
-      ? `git@github.com:${githubOwner}/${expectedRepoName}.git`
-      : null);
+    remoteUrl || buildGithubRemoteUrl(githubOwner, expectedRepoName);
 
   if (!repoDir) {
     // Always create missing Workspace repo under its expected `${project.key}--${projectId}` folder!
@@ -410,7 +541,7 @@ function preparePhysicalGitRepo({
           {
             encoding: 'utf8',
             timeout: 90000,
-            env: NON_INTERACTIVE_GIT_ENV,
+            env: gitEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
           }
         );
@@ -431,26 +562,26 @@ function preparePhysicalGitRepo({
         });
         if (ensuredRemote.created) {
           createdRemoteRepo = true;
-          if (ensuredRemote.remoteUrl) {
-            effectiveRemoteUrl = ensuredRemote.remoteUrl;
-          }
-          // Try cloning in case remote repo was created from a non-empty boilerplate template
-          if (effectiveRemoteUrl) {
-            const retryClone = spawnSync(
-              'git',
-              ['clone', '--no-tags', effectiveRemoteUrl, repoDir],
-              {
-                encoding: 'utf8',
-                timeout: 90000,
-                env: NON_INTERACTIVE_GIT_ENV,
-                stdio: ['ignore', 'pipe', 'pipe'],
-              }
-            );
-            if (retryClone.status === 0 && fs.existsSync(path.join(repoDir, '.git'))) {
-              clonedFromRemote = true;
-            } else {
-              fs.rmSync(repoDir, { recursive: true, force: true });
+        }
+        if (ensuredRemote.remoteUrl) {
+          effectiveRemoteUrl = ensuredRemote.remoteUrl;
+        }
+        // Try cloning in case remote repo was created from a non-empty boilerplate template
+        if ((ensuredRemote.created || ensuredRemote.remoteUrl) && effectiveRemoteUrl) {
+          const retryClone = spawnSync(
+            'git',
+            ['clone', '--no-tags', effectiveRemoteUrl, repoDir],
+            {
+              encoding: 'utf8',
+              timeout: 90000,
+              env: gitEnv,
+              stdio: ['ignore', 'pipe', 'pipe'],
             }
+          );
+          if (retryClone.status === 0 && fs.existsSync(path.join(repoDir, '.git'))) {
+            clonedFromRemote = true;
+          } else {
+            fs.rmSync(repoDir, { recursive: true, force: true });
           }
         }
       }
@@ -494,9 +625,26 @@ function preparePhysicalGitRepo({
       createdLocalRepo = true;
     }
   } else if (effectiveRemoteUrl && getRemotes(repoDir).length === 0) {
-    try {
-      git(repoDir, ['remote', 'add', 'origin', effectiveRemoteUrl]);
-    } catch (_) {}
+    // Existing local repo had no `origin` remote yet: ensure remote repo exists on GitHub if configured, then attach `origin`!
+    if (!offline && (githubOwner || customRemoteRepoCreator) && !remoteUrl) {
+      const ensuredRemote = ensureRemoteGithubRepoCli({
+        githubOwner,
+        repoName: expectedRepoName,
+        description: workspaceName || expectedRepoName,
+        customRemoteRepoCreator,
+      });
+      if (ensuredRemote.created) {
+        createdRemoteRepo = true;
+      }
+      if (ensuredRemote.remoteUrl) {
+        effectiveRemoteUrl = ensuredRemote.remoteUrl;
+      }
+    }
+    if (effectiveRemoteUrl) {
+      try {
+        git(repoDir, ['remote', 'add', 'origin', effectiveRemoteUrl]);
+      } catch (_) {}
+    }
   }
 
   ensureGitAuthorConfig(repoDir);
@@ -511,7 +659,14 @@ function preparePhysicalGitRepo({
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 60000,
-      env: NON_INTERACTIVE_GIT_ENV,
+      env: gitEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    spawnSync('git', ['remote', 'set-head', 'origin', '-a'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      timeout: 15000,
+      env: gitEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   }
@@ -524,58 +679,81 @@ function preparePhysicalGitRepo({
     }
   } catch (_) {}
 
-  // Checkout targetBranch (or create from origin/<branch> / main)
+  // Checkout targetBranch, inheriting from `origin/<branch>` or remote default branch (e.g. `origin/0.0.1`)
   const localBranchRef = `refs/heads/${branch}`;
   const remoteBranchRef = `refs/remotes/origin/${branch}`;
+  const remoteDefaultRef = hasOrigin ? resolveRemoteDefaultBranchRef(repoDir) : null;
 
-  if (refExists(repoDir, localBranchRef)) {
-    git(repoDir, ['checkout', '-f', branch]);
-  } else if (hasOrigin && refExists(repoDir, remoteBranchRef)) {
-    git(repoDir, ['checkout', '-B', branch, `origin/${branch}`]);
-  } else if (branch !== 'main' && refExists(repoDir, 'refs/heads/main')) {
-    git(repoDir, ['checkout', '-B', branch, 'main']);
-  } else if (branch !== 'main' && hasOrigin && refExists(repoDir, 'refs/remotes/origin/main')) {
-    git(repoDir, ['checkout', '-B', branch, 'origin/main']);
-  } else {
-    git(repoDir, ['checkout', '-b', branch]);
-  }
-
-  // Pull latest changes from `origin/<branch>` if it exists on the remote
-  if (!offline && hasOrigin && refExists(repoDir, remoteBranchRef) && !clonedFromRemote) {
-    const pullFf = spawnSync('git', ['pull', '--ff-only', 'origin', branch], {
-      cwd: repoDir,
-      encoding: 'utf8',
-      timeout: 60000,
-      env: NON_INTERACTIVE_GIT_ENV,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    if (pullFf.status === 0) {
-      pulledFromRemote = true;
-    } else {
-      // Fallback: merge preferring remote changes so diverged histories reconcile cleanly
-      const mergeRes = spawnSync(
-        'git',
-        ['merge', '--no-edit', '-X', 'theirs', `origin/${branch}`],
-        {
+  if (hasOrigin && refExists(repoDir, remoteBranchRef)) {
+    if (refExists(repoDir, localBranchRef) && hasMergeBase(repoDir, localBranchRef, remoteBranchRef)) {
+      git(repoDir, ['checkout', '-f', branch]);
+      if (!offline && !clonedFromRemote) {
+        const pullFf = spawnSync('git', ['pull', '--ff-only', 'origin', branch], {
           cwd: repoDir,
           encoding: 'utf8',
           timeout: 60000,
-          env: NON_INTERACTIVE_GIT_ENV,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }
-      );
-      if (mergeRes.status === 0) {
-        pulledFromRemote = true;
-      } else {
-        spawnSync('git', ['merge', '--abort'], {
-          cwd: repoDir,
-          env: NON_INTERACTIVE_GIT_ENV,
+          env: gitEnv,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
+        if (pullFf.status === 0) {
+          pulledFromRemote = true;
+        } else {
+          const mergeRes = spawnSync(
+            'git',
+            ['merge', '--no-edit', '-X', 'theirs', `origin/${branch}`],
+            {
+              cwd: repoDir,
+              encoding: 'utf8',
+              timeout: 60000,
+              env: gitEnv,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }
+          );
+          if (mergeRes.status === 0) {
+            pulledFromRemote = true;
+          } else {
+            spawnSync('git', ['merge', '--abort'], {
+              cwd: repoDir,
+              env: gitEnv,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+          }
+        }
+      } else if (clonedFromRemote) {
+        pulledFromRemote = true;
       }
+    } else {
+      // Local branch didn't exist or came from an earlier disconnected local `git init` -> align onto `origin/<branch>`!
+      git(repoDir, ['checkout', '-B', branch, remoteBranchRef]);
+      pulledFromRemote = true;
     }
-  } else if (clonedFromRemote) {
-    pulledFromRemote = true;
+  } else if (hasOrigin && remoteDefaultRef) {
+    // `origin/<branch>` does NOT exist on GitHub yet, while remote has a default branch (e.g. `origin/0.0.1` from template).
+    // Ensure `main` (and `branch`) inherit from `remoteDefaultRef` so remote boilerplate commits are never orphaned!
+    if (
+      !refExists(repoDir, 'refs/heads/main') ||
+      !isCommitAncestor(repoDir, remoteDefaultRef, 'refs/heads/main')
+    ) {
+      git(repoDir, ['checkout', '-B', 'main', remoteDefaultRef]);
+      pulledFromRemote = true;
+    }
+    if (branch === 'main') {
+      git(repoDir, ['checkout', '-f', 'main']);
+    } else if (
+      refExists(repoDir, localBranchRef) &&
+      isCommitAncestor(repoDir, remoteDefaultRef, localBranchRef)
+    ) {
+      git(repoDir, ['checkout', '-f', branch]);
+    } else {
+      git(repoDir, ['checkout', '-B', branch, 'refs/heads/main']);
+      pulledFromRemote = true;
+    }
+  } else if (refExists(repoDir, localBranchRef)) {
+    git(repoDir, ['checkout', '-f', branch]);
+  } else if (branch !== 'main' && refExists(repoDir, 'refs/heads/main')) {
+    git(repoDir, ['checkout', '-B', branch, 'main']);
+  } else {
+    git(repoDir, ['checkout', '-b', branch]);
   }
 
   return {
@@ -1691,9 +1869,10 @@ async function prepareWorkspaceRepository({
   targetBranch: explicitBranch = null,
   workspacesRoot = DEFAULT_WORKSPACES_ROOT,
   codeGenReposRoot = process.env.RAPIDER_CODEGEN_REPOS_DIR || null,
+  githubOwner: explicitGithubOwner = '',
   offline = false,
   parkAfterCommit = false,
-  pushPreparedCommit = false,
+  pushPreparedCommit = true,
   step = 'all',
   customApiClient = null,
   customRemoteRepoCreator = null,
@@ -1779,6 +1958,11 @@ async function prepareWorkspaceRepository({
     workspaceKey,
     repoName,
     remoteUrl,
+    githubOwner:
+      explicitGithubOwner ||
+      (workspaceBootstrap && workspaceBootstrap.githubOwner) ||
+      '',
+    allowEnvFileOwnerFallback: !customApiClient,
     targetBranch: resolvedBranch,
     workspacesRoot,
     codeGenReposRoot,
@@ -2082,30 +2266,42 @@ async function prepareWorkspaceRepository({
   summary.committed = commitRes.committed;
   summary.headSha = commitRes.headSha;
 
-  // If the repository was newly created (or `--push` requested) and `origin` is configured,
-  // push `main` and `targetBranch` so the remote repository immediately has the initialized branch!
-  if (
-    !offline &&
-    gitPrep.hasOrigin &&
-    (gitPrep.createdRemoteRepo || gitPrep.createdLocalRepo || pushPreparedCommit)
-  ) {
-    if (gitPrep.createdLocalRepo && gitPrep.branch !== 'main' && refExists(repoDir, 'refs/heads/main')) {
+  // Step 8: Push `main` / `targetBranch` to `origin` whenever online, `origin` is configured,
+  // and the remote branch is missing or behind `headSha`.
+  if (!offline && gitPrep.hasOrigin && pushPreparedCommit) {
+    const gitEnv = buildNonInteractiveGitEnv();
+    if (
+      gitPrep.branch !== 'main' &&
+      refExists(repoDir, 'refs/heads/main') &&
+      !refExists(repoDir, 'refs/remotes/origin/main')
+    ) {
       spawnSync('git', ['push', '-u', 'origin', 'main'], {
         cwd: repoDir,
         encoding: 'utf8',
         timeout: 60000,
-        env: NON_INTERACTIVE_GIT_ENV,
+        env: gitEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     }
-    const pushRes = spawnSync('git', ['push', '-u', 'origin', gitPrep.branch], {
-      cwd: repoDir,
-      encoding: 'utf8',
-      timeout: 60000,
-      env: NON_INTERACTIVE_GIT_ENV,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    summary.pushedToRemote = pushRes.status === 0;
+
+    const remoteBranchRef = `refs/remotes/origin/${gitPrep.branch}`;
+    let remoteSha = null;
+    if (refExists(repoDir, remoteBranchRef)) {
+      try {
+        remoteSha = git(repoDir, ['rev-parse', remoteBranchRef]);
+      } catch (_) {}
+    }
+
+    if (!remoteSha || remoteSha !== commitRes.headSha) {
+      const pushRes = spawnSync('git', ['push', '-u', 'origin', gitPrep.branch], {
+        cwd: repoDir,
+        encoding: 'utf8',
+        timeout: 60000,
+        env: gitEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      summary.pushedToRemote = pushRes.status === 0;
+    }
   }
 
   if (parkAfterCommit) {

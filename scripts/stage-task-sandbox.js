@@ -348,8 +348,8 @@ function buildTaskBriefMarkdown({
     ``,
     `## 5. Required Deliverable Output`,
     ``,
-    `1. Save any generated user files (\`.md\`, \`.csv\`, \`.pdf\`, \`.hbs\`) inside \`../output/deliverables/\`.`,
-    `2. Write final structured outcome JSON to \`../output/task-outcome.json\` (see \`AGENTS.md\` §5).`,
+    `1. Default to generating a well-designed, printable Executive HTML page (\`.html\` with Tailwind CSS, Executive Summary, KPI cards, inline SVG charts when quantitative data applies, formatted tables, and \`window.print()\` support) + companion \`.csv\` spreadsheet(s) inside \`../output/deliverables/\` (unless another format is explicitly requested).`,
+    `2. Place the primary \`.html\` filename first in \`deliverableFiles\` and write final structured outcome JSON to \`../output/task-outcome.json\` (see \`AGENTS.md\` §5).`,
     ``,
   ]
     .filter((line) => line !== null)

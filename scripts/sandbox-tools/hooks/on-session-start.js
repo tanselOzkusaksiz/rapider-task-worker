@@ -37,8 +37,8 @@ process.stdin.on('end', () => {
       '[Isolated Task Sandbox Ready]',
       '1. Read TASK_BRIEF.md, .agents/project-data-models.md, .agents/project-data-manager-guide.md, .agents/workspace-datasources-and-integrations.md, and workspace-context/_notebooks/INDEX.md first.',
       `2. ${attachNote}`,
-      '3. Use `node ../tools/rapider-task-cli.js` for live Workspace data queries and CSV/PDF/Handlebars verification.',
-      '4. Save scratch files in `../output/`, user deliverables in `../output/deliverables/`, and finalize `../output/task-outcome.json` before ending your turn.',
+      '3. Use `node ../tools/rapider-task-cli.js` for live Workspace data queries and HTML/CSV/PDF/Handlebars verification.',
+      '4. Default Deliverable Rule: For reports, forecasts, and analyses, generate a well-designed printable Tailwind `.html` page (with Executive Summary, KPI cards, inline SVG charts, formatted tables, and `window.print()` button) + companion `.csv` schedule(s) in `../output/deliverables/`, list the `.html` file first in `deliverableFiles`, and finalize `../output/task-outcome.json`.',
     ].join(' ');
 
     process.stdout.write(

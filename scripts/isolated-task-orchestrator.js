@@ -80,9 +80,12 @@ class IsolatedTaskOrchestrator {
     this.taskTimeoutMs =
       Number(options.taskTimeoutMs || process.env.TASK_TIMEOUT_MS) ||
       25 * 60 * 1000;
-    this.pushRemoteBranches = Boolean(
-      options.pushRemoteBranches ?? process.env.PUSH_TASK_BRANCHES === 'true'
-    );
+    this.pushRemoteBranches =
+      options.pushRemoteBranches !== undefined
+        ? Boolean(options.pushRemoteBranches)
+        : process.env.PUSH_TASK_BRANCHES !== undefined
+          ? process.env.PUSH_TASK_BRANCHES === 'true'
+          : !this.offline && !options.customAdminApiHandler;
     this.customCommandSpec = options.customCommandSpec || null;
 
     this.maxConcurrent =
@@ -173,23 +176,21 @@ class IsolatedTaskOrchestrator {
         }
       }
 
-      const attachmentLinksMd =
-        uploadedRefs.length > 0
-          ? '\n\n**Attached Deliverables:**\n' +
-            uploadedRefs.map((r) => `- \`${r.name}\` (\`${r.mimeType || 'file'}\`)`).join('\n')
-          : '';
-      const baseBody = String(existing.bodyMarkdown || '').replace(
+      // Keep `WorkItem.bodyMarkdown` strictly for the original Task Request (never append worker output onto it!).
+      // Strip any legacy appended `## Task Worker Update` block if present from an older run, and store
+      // the delivered outcome cleanly in `WorkItem.outcome` + `contextRefs` (plus the `WorkItemEvent` reply).
+      const cleanRequestBody = String(existing.bodyMarkdown || '').replace(
         /\n\n---\n## Task Worker Update[\s\S]*$/,
         ''
       );
-      const updatedBodyMarkdown = publicReplyMarkdown
-        ? `${baseBody}\n\n---\n## Task Worker Update (${String(status).toUpperCase()})\n${publicReplyMarkdown}${attachmentLinksMd}`
-        : existing.bodyMarkdown;
+      const bodyHadLegacyWorkerBlock = cleanRequestBody !== String(existing.bodyMarkdown || '');
+
+      const deliveredOutcomeText = String(publicReplyMarkdown || outcomeSummary || '').trim();
 
       const patchPayload = {
         ...(mergedRefs.length > 0 ? { contextRefs: mergedRefs } : {}),
-        ...(updatedBodyMarkdown ? { bodyMarkdown: updatedBodyMarkdown } : {}),
-        ...(outcomeSummary ? { recommendation: { text: String(outcomeSummary).slice(0, 500) } } : {}),
+        ...(bodyHadLegacyWorkerBlock ? { bodyMarkdown: cleanRequestBody } : {}),
+        ...(deliveredOutcomeText ? { outcome: deliveredOutcomeText } : {}),
       };
 
       if (Object.keys(patchPayload).length > 0) {
@@ -550,7 +551,7 @@ class IsolatedTaskOrchestrator {
         logTail: execResult.logTail,
         resultSummary: publicSummary,
         workItemStatus: finalStatus,
-        workItemOutcome: publicSummary,
+        workItemOutcome: publicReply || publicSummary,
         needsAttention: finalStatus === 'pending' || finalStatus === 'failed',
         publicCommentMarkdown: publicReply,
       });

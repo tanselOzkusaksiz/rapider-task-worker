@@ -16,7 +16,7 @@ You are executing inside an **isolated, single-Workspace sandbox** dedicated exc
    - **`.agents/workspace-datasources-and-integrations.md`** — Inventory of all configured Workspace DataSources, OAuth integrations (e.g., Jira, Slack, Google Drive, GitHub, Salesforce), MCP servers, and OpenAPI connectors along with live tool schemas and execution commands.
    - **`workspace-context/_notebooks/INDEX.md`** — Hierarchical index of all Workspace Notebooks, Knowledge Spaces, and Documents stored under `workspace-context/_notebooks/`. Read relevant notebook pages when domain context, policies, or business procedures apply.
    - **`workspace-context/dev.env`**, **`workspace-context/stage.env`**, **`workspace-context/prod.env`** — Workspace `ProjectSetting` (shared across environments) and per-environment `EnvironmentVariable` values matching Rapider's Project Code Generator.
-   - **Data Analysis Speed Rule:** When analyzing multiple tables, write a single fast Node.js aggregation script in `../output/analyze.js` that queries only the target `dataTableName`s, computes exact totals/breakdowns, and writes the `.md` / `.csv` deliverables directly — avoid calling `read_file` on multi-hundred-KB raw JSON dumps, and pass `WaitMsBeforeAsync: 10000` on `run_command` so short scripts return synchronously in one turn!
+   - **Data Analysis Speed Rule:** When analyzing multiple tables, write a single fast Node.js aggregation script in `../output/analyze.js` that queries only the target `dataTableName`s, computes exact totals/breakdowns, and writes the `.html` and `.csv` deliverables directly — avoid calling `read_file` on multi-hundred-KB raw JSON dumps, and pass `WaitMsBeforeAsync: 10000` on `run_command` so short scripts return synchronously in one turn!
 3. **Read Sub-Repo `AGENTS.md` & Referenced `.md` Files**: Before modifying or analyzing any mounted microapplication under `apps/<appKey>/` or code inside `workspace-context/`, read its local `AGENTS.md`, `README.md`, `rapider-sow.md`, and `app.manifest.json`.
 
 ---
@@ -56,12 +56,28 @@ node ../tools/rapider-task-cli.js run-datasource-tool --datasource="<dataSourceI
 node ../tools/rapider-task-cli.js verify-handlebars --template=../output/deliverables/template.hbs --data=../output/sample.json
 node ../tools/rapider-task-cli.js save-message-template --key=<slug> --subject="Subject" --file=../output/deliverables/template.hbs
 
-# Export RFC-4180 UTF-8 BOM CSV and print-styled PDF deliverables
-node ../tools/rapider-task-cli.js export-csv --in=../output/scratch-rows.json --out=../output/deliverables/report.csv
+# Export RFC-4180 UTF-8 BOM CSV, validate Executive HTML reports, and (if explicitly requested) render PDF
+node ../tools/rapider-task-cli.js export-csv --in=../output/scratch-rows.json --out=../output/deliverables/report-data.csv
+node ../tools/rapider-task-cli.js verify-html --in=../output/deliverables/executive-report.html
 node ../tools/rapider-task-cli.js render-pdf --in=../output/deliverables/report.md --out=../output/deliverables/report.pdf --title="Report Title"
 ```
 
 Activate the specialized skills in `.agents/skills/` (`complex-data-reporting`, `handlebars-templating`, `deliverable-files`, `workspace-api-actions`) whenever your task involves those workflows.
+
+---
+
+## 3b. Default Deliverable Format Standard (Executive Printable HTML + Companion CSV)
+
+Unless the user explicitly requests **only** a specific format (e.g., "CSV only", "Markdown only", or "PDF only"):
+1. **Default Primary Output = Executive Self-Contained `.html` Page (`../output/deliverables/<slug>.html`)**:
+   - Rapider Inbox renders `.html` deliverables directly inside an interactive **HTML Preview** pane with Print and Fullscreen controls.
+   - Include `<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>` in `<head>` for crisp Tailwind CSS styling, plus `@media print` rules (`.no-print { display: none !important; }`, `print-color-adjust: exact`, `break-inside: avoid`) and a top-right `<button onclick="window.print()" class="no-print ... bg-indigo-600 !text-white text-white" style="color: #ffffff !important;">Print / Save as PDF</button>`.
+   - Structure every report with: **(a) Executive Summary & Headline KPI Cards**, **(b) Crisp Inline `<svg>` Charts** (e.g., 12-month forecast bar/line chart, Best vs. Worst Case comparison bars, or category breakdown), **(c) Clean Tabular Schedules** (`tabular-nums` right-aligned currency/numbers, status badges, bold `<tfoot>` totals), and **(d) Methodology & Data Notes**.
+   - Run `node ../tools/rapider-task-cli.js verify-html --in=../output/deliverables/<slug>.html` to verify clean HTML structure and zero `NaN` / `[object Object]` defects.
+2. **Companion `.csv` Data Exports**:
+   - Whenever tabular datasets, monthly projections, or line-item schedules are computed, **also** export companion `.csv` file(s) (`export-csv`) into `../output/deliverables/` so users can download raw spreadsheet data alongside the interactive HTML report.
+3. **List `.html` First in `deliverableFiles`**:
+   - Put the primary `.html` report first in `deliverableFiles` inside `../output/task-outcome.json` so Rapider Inbox auto-previews it immediately. Keep `publicReplyMarkdown` concise (3–6 bullet highlights + executive summary) rather than duplicating giant multi-hundred-row tables that are already rendered in the HTML report.
 
 ---
 
@@ -76,7 +92,7 @@ Activate the specialized skills in `.agents/skills/` (`complex-data-reporting`, 
 ## 5. Mandatory Completion Contract (`../output/task-outcome.json`)
 
 Before ending your final turn, you **MUST**:
-1. Place all user-facing deliverable files (`.md`, `.csv`, `.pdf`, `.hbs`, `.json`) inside `../output/deliverables/`.
+1. Place all user-facing deliverable files (`.html`, `.csv`, `.pdf`, `.md`, `.hbs`, `.json`) inside `../output/deliverables/`.
 2. Write valid JSON to `../output/task-outcome.json` matching this exact schema:
 
 ```json
@@ -84,11 +100,10 @@ Before ending your final turn, you **MUST**:
   "status": "resolved",
   "taskCategory": "reporting",
   "outcomeSummary": "One-sentence factual summary of what was completed.",
-  "publicReplyMarkdown": "Concise, user-friendly Markdown reply summarizing key findings, exact record counts, and attached deliverables.",
+  "publicReplyMarkdown": "Concise executive highlights summarizing key metrics, record counts, and the interactive HTML + CSV deliverables.",
   "deliverableFiles": [
-    "report.md",
-    "report.csv",
-    "report.pdf"
+    "executive-report.html",
+    "report-schedule.csv"
   ],
   "modifiedRepos": []
 }

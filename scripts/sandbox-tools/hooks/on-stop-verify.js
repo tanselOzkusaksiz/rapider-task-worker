@@ -120,6 +120,43 @@ process.stdin.on('end', () => {
         );
         return;
       }
+
+      for (const f of outcome.deliverableFiles) {
+        const clean = path.basename(String(f || ''));
+        if (!/\.html?$/i.test(clean)) continue;
+        const htmlPath = path.join(deliverablesDir, clean);
+        const htmlContent = fs.readFileSync(htmlPath, 'utf8');
+        if (!/<html[\s>]/i.test(htmlContent) || !/<\/body>/i.test(htmlContent) || htmlContent.trim().length < 200) {
+          process.stdout.write(
+            JSON.stringify({
+              decision: 'continue',
+              reason: `HTML deliverable "${clean}" is incomplete (must be a complete <html>...<body>...</body></html> document). Fix it before finishing.`,
+            })
+          );
+          return;
+        }
+        if (htmlContent.includes('[object Object]')) {
+          process.stdout.write(
+            JSON.stringify({
+              decision: 'continue',
+              reason: `HTML deliverable "${clean}" contains unformatted "[object Object]". Fix object serialization in "${clean}" before finishing.`,
+            })
+          );
+          return;
+        }
+        const htmlLeaks = CONFIDENTIALITY_CHECKS.filter((c) => c.pattern.test(htmlContent)).map(
+          (c) => c.reason
+        );
+        if (htmlLeaks.length > 0) {
+          process.stdout.write(
+            JSON.stringify({
+              decision: 'continue',
+              reason: `HTML deliverable "${clean}" violates confidentiality (${htmlLeaks.join(', ')}). Strip internal sandbox/host paths or model names.`,
+            })
+          );
+          return;
+        }
+      }
     }
 
     process.stdout.write(JSON.stringify({ decision: 'allow' }));

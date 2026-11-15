@@ -491,6 +491,46 @@ async function main() {
     return;
   }
 
+  if (cmd === 'verify-html') {
+    const inFile = getArg(args, 'in') || getArg(args, 'file');
+    if (!inFile) throw new Error('--in=<report.html> is required.');
+    const absIn = path.resolve(inFile);
+    if (!fs.existsSync(absIn)) {
+      throw new Error(`HTML file does not exist: ${absIn}`);
+    }
+    const html = fs.readFileSync(absIn, 'utf8');
+    const issues = [];
+    if (html.trim().length < 200) issues.push('Document is shorter than 200 characters.');
+    if (!/<html[\s>]/i.test(html) || !/<\/html>/i.test(html)) {
+      issues.push('Missing <html>...</html> root element.');
+    }
+    if (!/<body[\s>]/i.test(html) || !/<\/body>/i.test(html)) {
+      issues.push('Missing <body>...</body> element.');
+    }
+    if (html.includes('[object Object]')) {
+      issues.push('Contains literal "[object Object]".');
+    }
+    if (/>\s*NaN\s*</.test(html) || /\$NaN\b/.test(html)) {
+      issues.push('Contains rendered NaN value.');
+    }
+    if (/\/Users\/[A-Za-z0-9._-]+|_sandboxes\//.test(html)) {
+      issues.push('Contains leaked internal host/sandbox filesystem path.');
+    }
+    const result = {
+      ok: issues.length === 0,
+      file: absIn,
+      bytes: Buffer.byteLength(html, 'utf8'),
+      hasPrintSupport: /window\.print|@media\s+print/i.test(html),
+      hasSvgChart: /<svg[\s>]/i.test(html),
+      issues,
+    };
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      process.exit(1);
+    }
+    return;
+  }
+
   if (cmd === 'workspace-api') {
     const method = getArg(args, 'method', 'GET');
     const apiPath = getArg(args, 'path');

@@ -19,10 +19,29 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 
+function buildGitEnv() {
+  const env = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_MERGE_AUTOEDIT: 'no',
+  };
+  const runtimeToken = String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim();
+  if (runtimeToken) {
+    if (!env.GH_TOKEN) env.GH_TOKEN = runtimeToken;
+    const prevCount = parseInt(env.GIT_CONFIG_COUNT || '0', 10) || 0;
+    const basicToken = Buffer.from(`x-access-token:${runtimeToken}`, 'utf8').toString('base64');
+    env.GIT_CONFIG_COUNT = String(prevCount + 1);
+    env[`GIT_CONFIG_KEY_${prevCount}`] = 'http.https://github.com/.extraheader';
+    env[`GIT_CONFIG_VALUE_${prevCount}`] = `AUTHORIZATION: basic ${basicToken}`;
+  }
+  return env;
+}
+
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
+    env: buildGitEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 }
