@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 
 const {
   extractTaskTargetBranch,
+  calculateExpectedWorkspaceRepoName,
   buildProjectModelsContextMarkdownPure,
   buildWorkspaceEnvFilesPure,
   prepareWorkspaceRepository,
@@ -665,5 +666,110 @@ describe('Workspace Git Repository Pre-Task Preparation Pipeline', () => {
     assert.match(envs['dev.env'], /LOG_LEVEL=debug/);
     assert.match(envs['stage.env'], /LOG_LEVEL=info/);
     assert.match(envs['prod.env'], /LOG_LEVEL=warn/);
+  });
+
+  it('creates missing Workspace repository (GitInfo + remote repo + local repo) with expected `${project.key}--${projectId}` name when none exists yet', async () => {
+    assert.equal(
+      calculateExpectedWorkspaceRepoName({ key: 'acme-erp', name: 'Acme ERP Suite' }, 'ws-new-99'),
+      'acme-erp--ws-new-99'
+    );
+    assert.equal(
+      calculateExpectedWorkspaceRepoName({ name: 'Acme ERP Suite' }, 'ws-new-99'),
+      'acme-erp-suite--ws-new-99'
+    );
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rapider-ws-create-'));
+    try {
+      const remotesRoot = path.join(tmpRoot, 'remotes');
+      const workspacesRoot = path.join(tmpRoot, 'WORKSPACES');
+      fs.mkdirSync(remotesRoot, { recursive: true });
+      fs.mkdirSync(workspacesRoot, { recursive: true });
+
+      let ensureEndpointCalled = 0;
+      let createdRemoteBareDir = null;
+
+      // Simulate a Workspace that has NO `GitInfo` yet (GET `/git-infos` returns 404/null) and NO repo on disk!
+      const noRepoApi = {
+        async getText(endpointPath) {
+          if (endpointPath === '/project-models/model-descriptions-for-ai-context') {
+            return 'Project Data Models Context:\n\nEntity: Order\nEntity Description: Sales order.\n\nAvailable Fields:\n- orderNo  (string)\n\nAvailable Relations:\nNo relations defined.\n';
+          }
+          throw new Error(`Unexpected getText: ${endpointPath}`);
+        },
+        async getBuffer() {
+          return null;
+        },
+        async postJson(endpointPath) {
+          if (endpointPath === '/git-infos/ensure') {
+            ensureEndpointCalled++;
+            return {
+              id: 'gi-new-99',
+              projectId: 'ws-new-99',
+              repoName: 'acme-erp--ws-new-99',
+              createdGitInfo: true,
+              createdRemoteRepo: false,
+            };
+          }
+          return {};
+        },
+        async getJson(endpointPath) {
+          if (endpointPath === '/projects') {
+            return [{ id: 'ws-new-99', key: 'acme-erp', name: 'Acme ERP Suite' }];
+          }
+          if (endpointPath === '/git-infos') {
+            const err = new Error('Git info not found.');
+            err.status = 404;
+            throw err;
+          }
+          if (endpointPath.startsWith('/project-models')) {
+            return [{ id: 'm-ord', title: 'Order', name: 'ErpOrder', dataTableName: 'erp_orders' }];
+          }
+          if (endpointPath === '/project-settings') {
+            return [{ key: 'DEFAULT_LOCALE', value: 'en-US' }];
+          }
+          if (endpointPath === '/environment-variables') {
+            return [{ key: 'ERP_MODE', value: 'sandbox', environmentKey: 'DEV' }];
+          }
+          return [];
+        },
+      };
+
+      const res = await prepareWorkspaceRepository({
+        projectId: 'ws-new-99',
+        workItem: { id: 'task-brand-new-ws', projectId: 'ws-new-99', branch: 'feat/bootstrap' },
+        workspacesRoot,
+        customApiClient: noRepoApi,
+        customRemoteRepoCreator: ({ repoName }) => {
+          createdRemoteBareDir = path.join(remotesRoot, `${repoName}.git`);
+          fs.mkdirSync(createdRemoteBareDir, { recursive: true });
+          git(createdRemoteBareDir, ['init', '--bare', '-b', 'main']);
+          return { created: true, remoteUrl: createdRemoteBareDir };
+        },
+      });
+
+      assert.equal(ensureEndpointCalled, 1);
+      assert.equal(res.repoName, 'acme-erp--ws-new-99');
+      assert.equal(res.existedOnDisk, false);
+      assert.equal(res.createdGitInfo, true);
+      assert.equal(res.createdLocalRepo, true);
+      assert.equal(res.createdRemoteRepo, true);
+      assert.equal(res.pushedToRemote, true);
+      assert.equal(res.branch, 'feat/bootstrap');
+
+      // Created under `WORKSPACES/acme-erp--ws-new-99` (NEVER bare `WORKSPACES/ws-new-99`!)
+      const expectedLocalDir = path.join(workspacesRoot, 'acme-erp--ws-new-99');
+      assert.equal(res.repoDir, expectedLocalDir);
+      assert.equal(fs.existsSync(expectedLocalDir), true);
+      assert.equal(fs.existsSync(path.join(workspacesRoot, 'ws-new-99')), false);
+      assert.equal(fs.existsSync(path.join(expectedLocalDir, '.agents/project-data-models.md')), true);
+      assert.equal(fs.existsSync(path.join(expectedLocalDir, 'dev.env')), true);
+
+      // Remote bare repo also received both `main` and `feat/bootstrap` branches!
+      const remoteBranches = git(createdRemoteBareDir, ['branch', '--list']);
+      assert.match(remoteBranches, /main/);
+      assert.match(remoteBranches, /feat\/bootstrap/);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -136,21 +136,42 @@ function extractTaskTargetBranch(workItem) {
 }
 
 /**
- * Computes canonical GitHub repo name matching `GitInfoRepository.calculateRemoteRepoName`
- * (`${projectName}--${projectId}`) when `GitInfo.repoName` is not explicitly returned.
+ * Computes the canonical expected GitHub repository name matching Rapider's
+ * `GitInfoRepository.calculateRemoteRepoName` and `project-generator.service.ts`
+ * (`${project.key}--${projectId}`, or slugified `${project.name}--${projectId}`).
+ *
+ * Accepts either a `Project` object (`{ key, name }`) or a string (`keyOrName`).
  */
-function calculateFallbackRepoName(projectName, projectId) {
+function calculateExpectedWorkspaceRepoName(projectOrName, projectId) {
   const safeId = sanitizeFolderSegment(projectId);
-  const rawName = String(projectName || '')
-    .trim()
+  const rawKey =
+    projectOrName && typeof projectOrName === 'object'
+      ? String(projectOrName.key || '').trim()
+      : '';
+  const rawName =
+    projectOrName && typeof projectOrName === 'object'
+      ? String(projectOrName.name || projectOrName.workspaceName || '').trim()
+      : String(projectOrName || '').trim();
+
+  if (
+    rawKey &&
+    /^[a-zA-Z0-9._-]+$/.test(rawKey) &&
+    !rawKey.includes('..') &&
+    rawKey.toLowerCase() !== safeId.toLowerCase()
+  ) {
+    return `${rawKey}--${safeId}`;
+  }
+
+  const slug = (rawKey || rawName || 'workspace')
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (!rawName || rawName === safeId.toLowerCase()) {
-    return safeId;
-  }
-  return `${rawName}--${safeId}`;
+
+  const prefix = !slug || slug === safeId.toLowerCase() ? 'workspace' : slug;
+  return `${prefix}--${safeId}`;
 }
+
+const calculateFallbackRepoName = calculateExpectedWorkspaceRepoName;
 
 function normalizeLf(text) {
   return String(text || '').replace(/\r\n/g, '\n').trimEnd() + '\n';
@@ -178,6 +199,18 @@ function git(cwd, args, opts = {}) {
 function refExists(cwd, ref) {
   try {
     execFileSync('git', ['show-ref', '--verify', '--quiet', ref], {
+      cwd,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasAnyCommits(cwd) {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
       cwd,
       stdio: 'ignore',
     });
@@ -233,89 +266,214 @@ function ensureGitAuthorConfig(repoDir) {
 // Step 1: Physical GitHub Repo Resolution, Branch Checkout & `git pull`
 // ─────────────────────────────────────────────────────────────────────────────
 
+function ensureRemoteGithubRepoCli({
+  githubOwner,
+  repoName,
+  description = '',
+  customRemoteRepoCreator = null,
+}) {
+  if (typeof customRemoteRepoCreator === 'function') {
+    const res = customRemoteRepoCreator({ githubOwner, repoName, description });
+    return {
+      created: Boolean(res?.created ?? res),
+      remoteUrl: res?.remoteUrl || null,
+    };
+  }
+
+  const safeOwner = String(githubOwner || '').trim();
+  const safeRepo = String(repoName || '').trim();
+  if (
+    !safeOwner ||
+    !safeRepo ||
+    !/^[a-zA-Z0-9._-]+$/.test(safeOwner) ||
+    !/^[a-zA-Z0-9._-]+$/.test(safeRepo) ||
+    process.env.IS_GITHUB_INTEGRATION_ENABLED === 'false'
+  ) {
+    return { created: false, remoteUrl: null };
+  }
+
+  const checkRes = spawnSync('gh', ['api', `/repos/${safeOwner}/${safeRepo}`], {
+    encoding: 'utf8',
+    timeout: 20000,
+    env: NON_INTERACTIVE_GIT_ENV,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (checkRes.status === 0) {
+    return { created: false, remoteUrl: `git@github.com:${safeOwner}/${safeRepo}.git` };
+  }
+
+  const createArgs = ['repo', 'create', `${safeOwner}/${safeRepo}`, '--private'];
+  if (description) {
+    createArgs.push('--description', String(description).slice(0, 200));
+  }
+  const templateRepo = process.env.BOILERPLATE_BUNDLE_1_REPOSITORY_URL || '';
+  if (templateRepo && /^[a-zA-Z0-9._/-]+$/.test(templateRepo)) {
+    createArgs.push('--template', templateRepo);
+  }
+
+  const createRes = spawnSync('gh', createArgs, {
+    encoding: 'utf8',
+    timeout: 45000,
+    env: NON_INTERACTIVE_GIT_ENV,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  return {
+    created: createRes.status === 0,
+    remoteUrl:
+      createRes.status === 0 ? `git@github.com:${safeOwner}/${safeRepo}.git` : null,
+  };
+}
+
 /**
  * Resolves the physical repository directory on disk for a Workspace, checking:
- *   1. `<codeGenReposRoot>/<repoName>` (if `RAPIDER_CODEGEN_REPOS_DIR` is set & exists)
- *   2. `<workspacesRoot>/<repoName>` (canonical GitHub repo name `${projectName}--${projectId}`)
- *   3. `<workspacesRoot>/<projectId>` (legacy projectId folder if already present on disk)
+ *   1. `<codeGenReposRoot>/<expectedRepoName>` (if `RAPIDER_CODEGEN_REPOS_DIR` is set & exists)
+ *   2. `<workspacesRoot>/<expectedRepoName>` (canonical GitHub repo name `${project.key}--${projectId}`)
+ *   3. Any existing `<workspacesRoot>/*--<projectId>` git folder
+ *   4. Legacy `<workspacesRoot>/<projectId>` folder (migrated to `<workspacesRoot>/<expectedRepoName>`)
  *
  * If the repo exists on disk, switches to `targetBranch` (or `main` if unspecified)
  * and pulls the latest commits from `origin` when online.
- * If it does not exist on disk yet, attempts `git clone` when remote URL is configured,
- * otherwise initializes a clean git repository on `targetBranch`.
+ * If no repo exists yet, creates the repository with the expected name (`${project.key}--${projectId}`)
+ * both on GitHub (when configured) and on the physical drive (`WORKSPACES/<expectedRepoName>`).
  */
 function preparePhysicalGitRepo({
   projectId,
   workspaceName = '',
+  workspaceKey = '',
   repoName = null,
   remoteUrl = null,
   targetBranch = 'main',
   workspacesRoot = DEFAULT_WORKSPACES_ROOT,
   codeGenReposRoot = process.env.RAPIDER_CODEGEN_REPOS_DIR || null,
   offline = false,
+  customRemoteRepoCreator = null,
 }) {
   const safeId = sanitizeFolderSegment(projectId);
-  const safeRepoName = repoName ? sanitizeFolderSegment(repoName) : null;
+  const expectedRepoName = repoName
+    ? sanitizeFolderSegment(repoName)
+    : calculateExpectedWorkspaceRepoName(
+        { key: workspaceKey, name: workspaceName },
+        safeId
+      );
   const branch = sanitizeGitBranchName(targetBranch);
 
   fs.mkdirSync(workspacesRoot, { recursive: true });
 
+  const canonicalWorkspaceDir = path.join(workspacesRoot, expectedRepoName);
+  const legacyBareIdDir = path.join(workspacesRoot, safeId);
+
+  // Migrate legacy bare `<workspacesRoot>/<projectId>` checkout to `<workspacesRoot>/<expectedRepoName>`
+  if (
+    expectedRepoName !== safeId &&
+    !fs.existsSync(canonicalWorkspaceDir) &&
+    fs.existsSync(path.join(legacyBareIdDir, '.git'))
+  ) {
+    fs.renameSync(legacyBareIdDir, canonicalWorkspaceDir);
+  }
+
   const candidateDirs = [];
-  if (codeGenReposRoot && safeRepoName) {
-    candidateDirs.push(path.resolve(codeGenReposRoot, safeRepoName));
+  if (codeGenReposRoot) {
+    candidateDirs.push(path.resolve(codeGenReposRoot, expectedRepoName));
   }
-  if (safeRepoName) {
-    candidateDirs.push(path.join(workspacesRoot, safeRepoName));
+  candidateDirs.push(canonicalWorkspaceDir);
+
+  // Also check if another `<prefix>--<projectId>` directory already exists under `workspacesRoot`
+  const existingSuffixed = fs
+    .readdirSync(workspacesRoot, { withFileTypes: true })
+    .find(
+      (d) =>
+        d.isDirectory() &&
+        d.name.endsWith(`--${safeId}`) &&
+        fs.existsSync(path.join(workspacesRoot, d.name, '.git'))
+    );
+  if (existingSuffixed) {
+    candidateDirs.push(path.join(workspacesRoot, existingSuffixed.name));
   }
-  candidateDirs.push(path.join(workspacesRoot, safeId));
 
   let repoDir = candidateDirs.find((dir) => fs.existsSync(path.join(dir, '.git'))) || null;
   let existedOnDisk = Boolean(repoDir);
   let clonedFromRemote = false;
   let pulledFromRemote = false;
+  let createdLocalRepo = false;
+  let createdRemoteRepo = false;
 
   const githubOwner =
     process.env.RAPIDER_GITHUB_OWNER || process.env.GITHUB_OWNER || '';
-  const effectiveRemoteUrl =
+  let effectiveRemoteUrl =
     remoteUrl ||
-    (githubOwner && safeRepoName
-      ? `git@github.com:${githubOwner}/${safeRepoName}.git`
+    (githubOwner
+      ? `git@github.com:${githubOwner}/${expectedRepoName}.git`
       : null);
 
   if (!repoDir) {
-    // Prefer canonical `<workspacesRoot>/<repoName>` when `repoName` is known
-    repoDir = safeRepoName
-      ? path.join(workspacesRoot, safeRepoName)
-      : path.join(workspacesRoot, safeId);
+    // Always create missing Workspace repo under its expected `${project.key}--${projectId}` folder!
+    repoDir = canonicalWorkspaceDir;
 
-    if (!offline && effectiveRemoteUrl) {
-      const cloneRes = spawnSync(
-        'git',
-        ['clone', '--no-tags', effectiveRemoteUrl, repoDir],
-        {
-          encoding: 'utf8',
-          timeout: 90000,
-          env: NON_INTERACTIVE_GIT_ENV,
-          stdio: ['ignore', 'pipe', 'pipe'],
+    if (!offline && (effectiveRemoteUrl || githubOwner || customRemoteRepoCreator)) {
+      if (effectiveRemoteUrl) {
+        const cloneRes = spawnSync(
+          'git',
+          ['clone', '--no-tags', effectiveRemoteUrl, repoDir],
+          {
+            encoding: 'utf8',
+            timeout: 90000,
+            env: NON_INTERACTIVE_GIT_ENV,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }
+        );
+        if (cloneRes.status === 0 && fs.existsSync(path.join(repoDir, '.git'))) {
+          clonedFromRemote = true;
+        } else {
+          fs.rmSync(repoDir, { recursive: true, force: true });
         }
-      );
-      if (cloneRes.status === 0 && fs.existsSync(path.join(repoDir, '.git'))) {
-        clonedFromRemote = true;
-        existedOnDisk = true;
-      } else {
-        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+
+      // Remote repo did not exist yet -> create remote repo with expected name!
+      if (!clonedFromRemote && (githubOwner || customRemoteRepoCreator)) {
+        const ensuredRemote = ensureRemoteGithubRepoCli({
+          githubOwner,
+          repoName: expectedRepoName,
+          description: workspaceName || expectedRepoName,
+          customRemoteRepoCreator,
+        });
+        if (ensuredRemote.created) {
+          createdRemoteRepo = true;
+          if (ensuredRemote.remoteUrl) {
+            effectiveRemoteUrl = ensuredRemote.remoteUrl;
+          }
+          // Try cloning in case remote repo was created from a non-empty boilerplate template
+          if (effectiveRemoteUrl) {
+            const retryClone = spawnSync(
+              'git',
+              ['clone', '--no-tags', effectiveRemoteUrl, repoDir],
+              {
+                encoding: 'utf8',
+                timeout: 90000,
+                env: NON_INTERACTIVE_GIT_ENV,
+                stdio: ['ignore', 'pipe', 'pipe'],
+              }
+            );
+            if (retryClone.status === 0 && fs.existsSync(path.join(repoDir, '.git'))) {
+              clonedFromRemote = true;
+            } else {
+              fs.rmSync(repoDir, { recursive: true, force: true });
+            }
+          }
+        }
       }
     }
 
+    // Initialize local physical repository on `main` (and `targetBranch`) with expected name!
     if (!fs.existsSync(path.join(repoDir, '.git'))) {
       fs.mkdirSync(repoDir, { recursive: true });
-      git(repoDir, ['init', '-b', branch]);
+      git(repoDir, ['init', '-b', 'main']);
       ensureGitAuthorConfig(repoDir);
       const readmePath = path.join(repoDir, 'README.md');
       if (!fs.existsSync(readmePath)) {
         fs.writeFileSync(
           readmePath,
-          `# ${workspaceName || safeRepoName || safeId}\n`,
+          `# ${workspaceName || expectedRepoName}\n\nRepository: \`${expectedRepoName}\`\n`,
           'utf8'
         );
       }
@@ -324,14 +482,22 @@ function preparePhysicalGitRepo({
         'commit',
         '--no-gpg-sign',
         '-m',
-        'chore: initialize workspace repository',
+        `chore: initialize workspace repository ${expectedRepoName}`,
       ]);
+      if (branch !== 'main') {
+        git(repoDir, ['checkout', '-b', branch]);
+      }
       if (effectiveRemoteUrl) {
         try {
           git(repoDir, ['remote', 'add', 'origin', effectiveRemoteUrl]);
         } catch (_) {}
       }
+      createdLocalRepo = true;
     }
+  } else if (effectiveRemoteUrl && getRemotes(repoDir).length === 0) {
+    try {
+      git(repoDir, ['remote', 'add', 'origin', effectiveRemoteUrl]);
+    } catch (_) {}
   }
 
   ensureGitAuthorConfig(repoDir);
@@ -415,9 +581,12 @@ function preparePhysicalGitRepo({
 
   return {
     repoDir,
-    repoName: safeRepoName || path.basename(repoDir),
+    repoName: path.basename(repoDir),
+    expectedRepoName,
     branch,
     existedOnDisk,
+    createdLocalRepo,
+    createdRemoteRepo,
     clonedFromRemote,
     pulledFromRemote,
     hasOrigin,
@@ -1233,6 +1402,24 @@ function createDefaultApiClient({ backendUrl, projectToken }) {
       }
       return Buffer.from(await res.arrayBuffer());
     },
+    async postJson(endpointPath, body = {}, extraHeaders = {}) {
+      const res = await fetchWithRetry(`${backendUrl}${endpointPath}`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          ...headers,
+          ...extraHeaders,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = new Error(`POST ${endpointPath} HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    },
   };
 }
 
@@ -1489,13 +1676,16 @@ function commitPreparedWorkspaceFiles(repoDir, targetBranch, projectId) {
 async function prepareWorkspaceRepository({
   projectId,
   workItem = null,
+  workspaceBootstrap = null,
   targetBranch: explicitBranch = null,
   workspacesRoot = DEFAULT_WORKSPACES_ROOT,
   codeGenReposRoot = process.env.RAPIDER_CODEGEN_REPOS_DIR || null,
   offline = false,
   parkAfterCommit = false,
+  pushPreparedCommit = false,
   step = 'all',
   customApiClient = null,
+  customRemoteRepoCreator = null,
 }) {
   if (!projectId) {
     throw new Error('prepareWorkspaceRepository requires projectId.');
@@ -1513,10 +1703,16 @@ async function prepareWorkspaceRepository({
     api = createDefaultApiClient({ backendUrl: creds.backendUrl, projectToken });
   }
 
-  // Fetch Workspace name & GitInfo first so we resolve the exact GitHub repoName on disk
-  let workspaceName = safeId;
-  let repoName = null;
+  // Fetch Workspace (`key`, `name`) & `GitInfo` first; if no `GitInfo` / repo exists yet,
+  // ensure `GitInfo` + remote repo via `/git-infos/ensure` AND compute expected `${project.key}--${projectId}`!
+  let workspaceName =
+    (workspaceBootstrap && workspaceBootstrap.workspaceName) || safeId;
+  let workspaceKey =
+    (workspaceBootstrap && workspaceBootstrap.workspaceKey) || '';
+  let repoName =
+    (workspaceBootstrap && workspaceBootstrap.remoteRepoName) || null;
   let remoteUrl = null;
+  let createdGitInfo = false;
 
   if (api && !offline) {
     const [projectsRaw, gitInfoRaw] = await Promise.all([
@@ -1528,42 +1724,55 @@ async function prepareWorkspaceRepository({
       : projectsRaw && projectsRaw.id === safeId
         ? projectsRaw
         : null;
-    if (matchedProject && matchedProject.name) {
-      workspaceName = String(matchedProject.name);
+    if (matchedProject) {
+      if (matchedProject.name) workspaceName = String(matchedProject.name);
+      if (matchedProject.key) workspaceKey = String(matchedProject.key);
     }
 
-    const gitInfoObj = Array.isArray(gitInfoRaw) ? gitInfoRaw[0] : gitInfoRaw;
+    let gitInfoObj = Array.isArray(gitInfoRaw) ? gitInfoRaw[0] : gitInfoRaw;
+
+    // If `GitInfo` does not exist yet in Rapider DB, call `POST /git-infos/ensure` to create
+    // `GitInfo` (`${project.key}--${projectId}`) and provision the remote GitHub repository!
+    if ((!gitInfoObj || !gitInfoObj.repoName) && typeof api.postJson === 'function') {
+      const ensured = await safeCall(() => api.postJson('/git-infos/ensure', {}), null);
+      if (ensured && ensured.repoName) {
+        gitInfoObj = ensured;
+        createdGitInfo = Boolean(ensured.createdGitInfo);
+      }
+    }
+
     if (gitInfoObj && gitInfoObj.repoName) {
       repoName = String(gitInfoObj.repoName);
       if (gitInfoObj.remoteUrl || gitInfoObj.sshUrl || gitInfoObj.htmlUrl) {
         remoteUrl = gitInfoObj.remoteUrl || gitInfoObj.sshUrl || gitInfoObj.htmlUrl;
       }
-    } else if (matchedProject && matchedProject.name) {
-      // Check if code-generator folder `${projectName}--${projectId}` already exists on disk
-      const calculatedName = calculateFallbackRepoName(matchedProject.name, safeId);
-      const calcInWorkspaces = path.join(workspacesRoot, calculatedName);
-      const calcInCodeGen = codeGenReposRoot
-        ? path.resolve(codeGenReposRoot, calculatedName)
-        : null;
-      if (
-        fs.existsSync(calcInWorkspaces) ||
-        (calcInCodeGen && fs.existsSync(calcInCodeGen))
-      ) {
-        repoName = calculatedName;
-      }
+    } else {
+      // Deterministically compute expected repository name `${project.key}--${projectId}`
+      // (or `${slug(project.name)}--${projectId}`) so the repo is ALWAYS created with its expected name!
+      repoName = calculateExpectedWorkspaceRepoName(
+        matchedProject || { key: workspaceKey, name: workspaceName },
+        safeId
+      );
     }
+  } else if (!repoName) {
+    repoName = calculateExpectedWorkspaceRepoName(
+      { key: workspaceKey, name: workspaceName },
+      safeId
+    );
   }
 
-  // Step 1: Resolve physical repo, switch to task branch (or `main`), and pull latest
+  // Step 1: Resolve physical repo (or create it with `repoName` if missing), switch to task branch (or `main`), and pull latest
   const gitPrep = preparePhysicalGitRepo({
     projectId: safeId,
     workspaceName,
+    workspaceKey,
     repoName,
     remoteUrl,
     targetBranch: resolvedBranch,
     workspacesRoot,
     codeGenReposRoot,
     offline,
+    customRemoteRepoCreator,
   });
 
   const repoDir = gitPrep.repoDir;
@@ -1574,7 +1783,11 @@ async function prepareWorkspaceRepository({
     repoDir,
     branch: gitPrep.branch,
     existedOnDisk: gitPrep.existedOnDisk,
+    createdGitInfo,
+    createdLocalRepo: gitPrep.createdLocalRepo,
+    createdRemoteRepo: gitPrep.createdRemoteRepo,
     pulledFromRemote: gitPrep.pulledFromRemote,
+    pushedToRemote: false,
     modelsCount: 0,
     dataSourcesCount: 0,
     notebooksSpacesCount: 0,
@@ -1792,6 +2005,32 @@ async function prepareWorkspaceRepository({
   summary.committed = commitRes.committed;
   summary.headSha = commitRes.headSha;
 
+  // If the repository was newly created (or `--push` requested) and `origin` is configured,
+  // push `main` and `targetBranch` so the remote repository immediately has the initialized branch!
+  if (
+    !offline &&
+    gitPrep.hasOrigin &&
+    (gitPrep.createdRemoteRepo || gitPrep.createdLocalRepo || pushPreparedCommit)
+  ) {
+    if (gitPrep.createdLocalRepo && gitPrep.branch !== 'main' && refExists(repoDir, 'refs/heads/main')) {
+      spawnSync('git', ['push', '-u', 'origin', 'main'], {
+        cwd: repoDir,
+        encoding: 'utf8',
+        timeout: 60000,
+        env: NON_INTERACTIVE_GIT_ENV,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+    const pushRes = spawnSync('git', ['push', '-u', 'origin', gitPrep.branch], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      timeout: 60000,
+      env: NON_INTERACTIVE_GIT_ENV,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    summary.pushedToRemote = pushRes.status === 0;
+  }
+
   if (parkAfterCommit) {
     git(repoDir, ['checkout', '-f', 'idle']);
     git(repoDir, ['clean', '-fd']);
@@ -1848,6 +2087,7 @@ module.exports = {
   MANAGED_COMMIT_PATHS,
   extractTaskTargetBranch,
   sanitizeGitBranchName,
+  calculateExpectedWorkspaceRepoName,
   calculateFallbackRepoName,
   preparePhysicalGitRepo,
   buildProjectModelsContextMarkdownPure,

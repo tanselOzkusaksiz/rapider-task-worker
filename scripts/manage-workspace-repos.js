@@ -473,12 +473,14 @@ async function prepareWorkspaceSnapshotCommit(projectId, options = {}) {
       const prepSummary = await prepareWorkspaceRepository({
         projectId: safeId,
         workItem: options.workItem || null,
+        workspaceBootstrap: options.workspaceBootstrap || null,
         targetBranch,
         workspacesRoot,
         codeGenReposRoot: options.codeGenReposRoot,
         offline,
         parkAfterCommit: true,
         customApiClient: options.customApiClient || null,
+        customRemoteRepoCreator: options.customRemoteRepoCreator || null,
       });
 
       return {
@@ -496,6 +498,7 @@ async function prepareWorkspaceSnapshotCommit(projectId, options = {}) {
       const fallbackSummary = await prepareWorkspaceRepository({
         projectId: safeId,
         workItem: options.workItem || null,
+        workspaceBootstrap: options.workspaceBootstrap || null,
         targetBranch,
         workspacesRoot,
         codeGenReposRoot: options.codeGenReposRoot,

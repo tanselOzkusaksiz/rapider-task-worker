@@ -8,11 +8,14 @@ Every run fetches the latest Workspace metadata from **Rapider MongoDB** and **D
 
 ## 1. End-to-End 7-Step Preparation Pipeline
 
-1. **GitHub Repo Resolution, Branch Checkout & `git pull`**
-   - Queries `GET /git-infos` and `GET /projects` to resolve the Workspace's canonical GitHub repository name (`GitInfo.repoName`, e.g. `${projectName}--${projectId}`).
-   - Checks whether the repository exists on the physical drive (`RAPIDER_CODEGEN_REPOS_DIR/<repoName>`, `WORKSPACES/<repoName>`, or `WORKSPACES/<projectId>`).
-   - Resolves the target branch from the task (`workItem.branch` / `workItem.metadata.branch`, falling back to **`main`** when no branch is specified in the task).
-   - Switches cleanly to that branch and pulls the latest commits (`git fetch origin --prune` + `git pull --ff-only origin <branch>` with merge fallback when online and `origin` is configured; clones or initializes cleanly if not yet on disk).
+1. **GitHub Repo Resolution, Automatic Missing Repo Creation, Branch Checkout & `git pull`**
+   - Queries `GET /git-infos` and `GET /projects` to resolve the Workspace's canonical GitHub repository name (`GitInfo.repoName`).
+   - **If no repository exists yet (`GitInfo` missing / remote GitHub repo missing / local repo missing)**:
+     - Calls `POST /git-infos/ensure` on `rapider-server` (`GitInfoController.ensureProjectGitRepository`), which creates the missing `GitInfo` record in Rapider MongoDB with the expected name `${project.key}--${projectId}` (or slugified `${project.name}--${projectId}`) and provisions the private GitHub repository (`${GITHUB_OWNER}/${expectedRepoName}`) when GitHub integration is enabled.
+     - On the worker host, `preparePhysicalGitRepo()` also ensures the remote GitHub repository (`gh repo create <owner>/<expectedRepoName> --private` if `git clone` indicates the remote does not yet exist) and initializes the local physical repository at `WORKSPACES/<expectedRepoName>` on `main` (and `<taskBranch>` if specified), migrating any legacy bare `WORKSPACES/<projectId>` directory to `WORKSPACES/<expectedRepoName>`.
+   - **If the repository already exists on the physical drive** (`RAPIDER_CODEGEN_REPOS_DIR/<repoName>` or `WORKSPACES/<repoName>`):
+     - Switches cleanly to the branch specified in the task (`workItem.branch` / `workItem.metadata.branch`, defaulting to **`main`** when no branch is specified) and pulls the latest commits (`git fetch origin --prune` + `git pull --ff-only origin <branch>` with merge fallback).
+   - When a brand-new repository is created and `origin` is configured, Step 7 pushes the initialized `main` / `<taskBranch>` commit to `origin` automatically.
 
 2. **Project Data Models AI Context (`<repo root>/.agents/project-data-models.md`)**
    - Calls `GET /project-models/model-descriptions-for-ai-context` (`Accept-Language: en-US,en;q=0.9,tr;q=0.8`, `Authorization: <projectToken>`) and overwrites `<repo root>/.agents/project-data-models.md` with every `Entity`, `Entity Description`, `Available Fields`, and `Available Relations` (`belongsTo`, `hasMany`, `referencesMany`).

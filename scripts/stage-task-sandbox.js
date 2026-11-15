@@ -398,6 +398,7 @@ async function stageTaskSandbox({
   //    commit onto branch, and immediately re-park host repo to `idle`!
   const wsPrep = await prepareWorkspaceSnapshotCommit(workItem.projectId, {
     workItem,
+    workspaceBootstrap,
     workspacesRoot,
     codeGenReposRoot,
     offline,
