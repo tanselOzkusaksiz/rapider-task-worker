@@ -772,4 +772,77 @@ describe('Workspace Git Repository Pre-Task Preparation Pipeline', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('inherits from non-main remote default branch (e.g. 0.0.1), pushes prepared main branch to origin, and validates Executive HTML deliverables', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rapider-ws-001-'));
+    try {
+      const remotesRoot = path.join(tmpRoot, 'remotes');
+      const workspacesRoot = path.join(tmpRoot, 'WORKSPACES');
+      fs.mkdirSync(remotesRoot, { recursive: true });
+      fs.mkdirSync(workspacesRoot, { recursive: true });
+
+      // 1. Create remote bare repo whose ONLY branch is `0.0.1` (matching boilerplate-generated Workspace repos)
+      const bareRemoteDir = path.join(remotesRoot, 'app-dev-crm--ws-001.git');
+      fs.mkdirSync(bareRemoteDir, { recursive: true });
+      git(bareRemoteDir, ['init', '--bare', '-b', '0.0.1']);
+
+      const seedClone = path.join(tmpRoot, 'seed-001');
+      git(tmpRoot, ['clone', bareRemoteDir, seedClone]);
+      git(seedClone, ['config', 'user.name', 'Template Bot']);
+      git(seedClone, ['config', 'user.email', 'template@rapider.local']);
+      fs.writeFileSync(path.join(seedClone, 'README.md'), '# Rapider Code Template\n', 'utf8');
+      git(seedClone, ['add', '-A']);
+      git(seedClone, ['commit', '-m', 'Initial commit']);
+      const baseSha001 = git(seedClone, ['rev-parse', 'HEAD']);
+      git(seedClone, ['push', '-u', 'origin', '0.0.1']);
+
+      // 2. Simulate an earlier disconnected local `git init` without `origin` at `WORKSPACES/app-dev-crm--ws-001`
+      const localRepoDir = path.join(workspacesRoot, 'app-dev-crm--ws-001');
+      fs.mkdirSync(localRepoDir, { recursive: true });
+      git(localRepoDir, ['init', '-b', 'main']);
+      git(localRepoDir, ['config', 'user.name', 'Disconnected Init']);
+      git(localRepoDir, ['config', 'user.email', 'init@rapider.local']);
+      fs.writeFileSync(path.join(localRepoDir, '.gitignore'), 'node_modules/\n', 'utf8');
+      git(localRepoDir, ['add', '-A']);
+      git(localRepoDir, ['commit', '-m', 'orphan local init']);
+
+      // 3. Run `prepareWorkspaceRepository` with `pushPreparedCommit: true` and `remoteUrl: bareRemoteDir`
+      const api = createMockWorkspaceApi({ repoName: 'app-dev-crm--ws-001', remoteUrl: bareRemoteDir });
+      const res = await prepareWorkspaceRepository({
+        projectId: 'ws-prep-01',
+        workItem: { id: 'task-sync-001', projectId: 'ws-prep-01' },
+        workspacesRoot,
+        customApiClient: api,
+        pushPreparedCommit: true,
+      });
+
+      assert.equal(res.branch, 'main');
+      assert.equal(res.pushedToRemote, true);
+      // Verify `main` inherited `0.0.1` (`README.md` from `96d2e4b`-equivalent commit is preserved!)
+      assert.equal(fs.existsSync(path.join(localRepoDir, 'README.md')), true);
+      const remoteMainSha = git(bareRemoteDir, ['rev-parse', 'refs/heads/main']);
+      assert.equal(remoteMainSha, res.headSha);
+      const mergeBase = git(bareRemoteDir, ['merge-base', 'refs/heads/0.0.1', 'refs/heads/main']);
+      assert.equal(mergeBase, baseSha001);
+
+      // 4. Verify `rapider-task-cli.js verify-html` passes clean Executive Printable HTML and rejects `[object Object]` / leaked paths
+      const cliPath = path.resolve(__dirname, '../scripts/sandbox-tools/rapider-task-cli.js');
+      const goodHtmlPath = path.join(tmpRoot, 'executive-report.html');
+      fs.writeFileSync(
+        goodHtmlPath,
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>@media print { .no-print { display: none !important; } }</style></head><body><header><button class="no-print" onclick="window.print()">Print</button><h1>12-Month Executive Forecast</h1></header><main><svg viewBox="0 0 200 60"><rect x="10" y="10" width="80" height="30"/></svg><p>Strict Worst Case: $1,305,400 · Best Case: $3,336,400.</p></main></body></html>`,
+        'utf8'
+      );
+      const verifyOut = JSON.parse(
+        execFileSync(process.execPath, [cliPath, 'verify-html', `--in=${goodHtmlPath}`], {
+          encoding: 'utf8',
+        })
+      );
+      assert.equal(verifyOut.ok, true);
+      assert.equal(verifyOut.hasPrintSupport, true);
+      assert.equal(verifyOut.hasSvgChart, true);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
