@@ -10,7 +10,7 @@ Autonomous, workspace-isolated background AI task runner (**`ISOLATED-TASK-WORKE
 
 1. **Complex Data Reporting:** Multi-table Workspace DB queries (`/project-data-manager/{dataTableName}`), cross-entity joins, cohort & pipeline analytics, and 12-month worst-case / best-case scenario projections with zero fabricated numbers.
 2. **Handlebars Template Generation:** Schema-driven authoring, local Handlebars compile/render validation against live or sample Workspace records, and persistence to `.hbs` artifacts, `MessageTemplate`, and Workspace repos.
-3. **File Preparation:** Clean generation, validation, and Workspace `ProjectFile` upload of `.md`, `.pdf`, `.csv`, `.hbs`, and `.json` deliverables attached directly to the `WorkItem`.
+3. **File Preparation & Executive Printable HTML Standard:** Defaults report/analysis deliverables to self-contained **Tailwind CSS Executive Printable HTML** (`.html` with Executive Summary, KPI cards, inline `<svg>` charts, formatted tables, `@media print`, and `window.print()`) paired with companion `.csv` data exports (plus `.md`, `.pdf`, `.hbs`, and `.json` when requested), uploaded to Workspace `ProjectFile` storage and rendered inline inside Rapider Inbox (`<rapider-html-preview>`, `<rapider-markdown-preview>`, or PDF new-tab).
 4. **Allowed API Payloads & Actions:** Schema-validated payload preparation and execution strictly via Workspace-configured APIs and MCPs (`ToolGatewayService`).
 
 ---

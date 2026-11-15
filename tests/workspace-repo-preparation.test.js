@@ -806,8 +806,21 @@ describe('Workspace Git Repository Pre-Task Preparation Pipeline', () => {
       git(localRepoDir, ['add', '-A']);
       git(localRepoDir, ['commit', '-m', 'orphan local init']);
 
-      // 3. Run `prepareWorkspaceRepository` with `pushPreparedCommit: true` and `remoteUrl: bareRemoteDir`
-      const api = createMockWorkspaceApi({ repoName: 'app-dev-crm--ws-001', remoteUrl: bareRemoteDir });
+      // 3. Run `prepareWorkspaceRepository` with `pushPreparedCommit: true` and `remoteUrl` pointing to `bareRemoteDir`
+      const baseApi = createMockWorkspaceApiClient();
+      const api = {
+        ...baseApi,
+        async getJson(endpointPath) {
+          if (endpointPath === '/git-infos') {
+            return {
+              projectId: 'ws-prep-01',
+              repoName: 'app-dev-crm--ws-001',
+              remoteUrl: bareRemoteDir,
+            };
+          }
+          return baseApi.getJson(endpointPath);
+        },
+      };
       const res = await prepareWorkspaceRepository({
         projectId: 'ws-prep-01',
         workItem: { id: 'task-sync-001', projectId: 'ws-prep-01' },
