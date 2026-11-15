@@ -35,10 +35,10 @@ process.stdin.on('end', () => {
 
     const msg = [
       '[Isolated Task Sandbox Ready]',
-      '1. Read TASK_BRIEF.md and workspace-context/WORKSPACE_CONTEXT.md first.',
+      '1. Read TASK_BRIEF.md, .agents/project-data-models.md, .agents/project-data-manager-guide.md, .agents/workspace-datasources-and-integrations.md, and workspace-context/_notebooks/INDEX.md first.',
       `2. ${attachNote}`,
       '3. Use `node ../tools/rapider-task-cli.js` for live Workspace data queries and CSV/PDF/Handlebars verification.',
-      '4. Write deliverables to `../output/deliverables/` and finalize `../output/task-outcome.json` before ending your turn.',
+      '4. Save scratch files in `../output/`, user deliverables in `../output/deliverables/`, and finalize `../output/task-outcome.json` before ending your turn.',
     ].join(' ');
 
     process.stdout.write(

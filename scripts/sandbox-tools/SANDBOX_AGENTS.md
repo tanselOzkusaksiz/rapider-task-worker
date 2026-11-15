@@ -67,7 +67,8 @@ Activate the specialized skills in `.agents/skills/` (`complex-data-reporting`, 
 ## 4. Repository Modification Rules (`workspace-context/` & `apps/<appKey>/`)
 
 - Each mounted repo (`workspace-context/` and `apps/<appKey>/`) is initialized at tag `ORCH_BASELINE`.
-- Keep code changes clean, minimal, and committed cleanly to git (`git add -A && git commit -m "feat: ..."`). Do **not** add git remotes or attempt `git push`; the host orchestrator harvests commits relative to `ORCH_BASELINE` automatically after your session finishes.
+- Save all temporary scratch files/scripts in `../output/` and all user deliverables in `../output/deliverables/` — **never** drop scratch files or reports inside `workspace-context/` unless the user explicitly requested committing repository code/file changes.
+- When repository code changes are requested, keep commits clean and minimal (`git add -A && git commit -m "feat: ..."`). Do **not** add git remotes or attempt `git push`; the host orchestrator harvests commits relative to `ORCH_BASELINE` automatically after your session finishes.
 
 ---
 

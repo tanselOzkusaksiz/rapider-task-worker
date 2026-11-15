@@ -150,8 +150,12 @@ class IsolatedTaskOrchestrator {
     }
   }
 
-  async attachDeliverablesToWorkItem(projectId, workItemId, uploadedRefs = []) {
-    if (!uploadedRefs.length || this.customApiHandler || this.offline) return;
+  async syncWorkItemDeliverablesAndSummary(
+    projectId,
+    workItemId,
+    { uploadedRefs = [], status = 'resolved', outcomeSummary = '', publicReplyMarkdown = '' } = {}
+  ) {
+    if (this.customApiHandler || this.offline) return;
     try {
       const { token: baseToken, creds } = await authenticateBase();
       const projectToken = await switchActiveProject(creds, baseToken, projectId);
@@ -162,19 +166,71 @@ class IsolatedTaskOrchestrator {
       if (!getRes.ok) return;
       const existing = await getRes.json().catch(() => ({}));
       const prevRefs = Array.isArray(existing.contextRefs) ? existing.contextRefs : [];
-      const mergedRefs = [...prevRefs, ...uploadedRefs];
-      await fetchWithRetry(
-        `${creds.backendUrl}/work-items/${encodeURIComponent(workItemId)}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: projectToken,
-          },
-          body: JSON.stringify({ contextRefs: mergedRefs }),
+      const mergedRefs = [...prevRefs];
+      for (const ref of uploadedRefs) {
+        if (!mergedRefs.some((r) => r && r.id && r.id === ref.id)) {
+          mergedRefs.push(ref);
         }
+      }
+
+      const attachmentLinksMd =
+        uploadedRefs.length > 0
+          ? '\n\n**Attached Deliverables:**\n' +
+            uploadedRefs.map((r) => `- \`${r.name}\` (\`${r.mimeType || 'file'}\`)`).join('\n')
+          : '';
+      const baseBody = String(existing.bodyMarkdown || '').replace(
+        /\n\n---\n## Task Worker Update[\s\S]*$/,
+        ''
       );
-    } catch (_) {}
+      const updatedBodyMarkdown = publicReplyMarkdown
+        ? `${baseBody}\n\n---\n## Task Worker Update (${String(status).toUpperCase()})\n${publicReplyMarkdown}${attachmentLinksMd}`
+        : existing.bodyMarkdown;
+
+      const patchPayload = {
+        ...(mergedRefs.length > 0 ? { contextRefs: mergedRefs } : {}),
+        ...(updatedBodyMarkdown ? { bodyMarkdown: updatedBodyMarkdown } : {}),
+        ...(outcomeSummary ? { recommendation: { text: String(outcomeSummary).slice(0, 500) } } : {}),
+      };
+
+      if (Object.keys(patchPayload).length > 0) {
+        await fetchWithRetry(
+          `${creds.backendUrl}/work-items/${encodeURIComponent(workItemId)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: projectToken,
+            },
+            body: JSON.stringify(patchPayload),
+          }
+        );
+      }
+
+      // Mark WorkItemRecipient unread (`readAt: null`) so Inbox highlights the completed deliverable
+      const recFilter = encodeURIComponent(JSON.stringify({ where: { workItemId } }));
+      const recRes = await fetchWithRetry(
+        `${creds.backendUrl}/work-item-recipients?filter=${recFilter}`,
+        { headers: { Authorization: projectToken } }
+      );
+      const recipients = await recRes.json().catch(() => []);
+      for (const rec of Array.isArray(recipients) ? recipients : []) {
+        if (rec && rec.id && rec.readAt) {
+          await fetchWithRetry(
+            `${creds.backendUrl}/work-item-recipients/${encodeURIComponent(rec.id)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: projectToken,
+              },
+              body: JSON.stringify({ readAt: null }),
+            }
+          ).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.error(`[TaskOrchestrator] Warning syncing WorkItem deliverables (${workItemId}): ${err.message}`);
+    }
   }
 
   pruneCompletedSandboxes() {
@@ -447,8 +503,9 @@ class IsolatedTaskOrchestrator {
             workItemId: workItem.id,
             filePaths: harvested.deliverables.map((d) => d.fullPath),
           });
-          await this.attachDeliverablesToWorkItem(workItem.projectId, workItem.id, uploadedRefs);
-        } catch (_) {}
+        } catch (err) {
+          console.error(`[TaskOrchestrator] Artifact upload error (${workItem.id}): ${err.message}`);
+        }
       } else if (harvested.deliverables.length > 0) {
         uploadedRefs = harvested.deliverables.map((d) => ({
           type: 'projectFile',
@@ -496,6 +553,13 @@ class IsolatedTaskOrchestrator {
         workItemOutcome: publicSummary,
         needsAttention: finalStatus === 'pending' || finalStatus === 'failed',
         publicCommentMarkdown: publicReply,
+      });
+
+      await this.syncWorkItemDeliverablesAndSummary(workItem.projectId, workItem.id, {
+        uploadedRefs,
+        status: finalStatus,
+        outcomeSummary: publicSummary,
+        publicReplyMarkdown: publicReply,
       });
     } catch (err) {
       const safeUserError =

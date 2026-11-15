@@ -61,6 +61,28 @@ function commandExists(bin) {
 }
 
 /**
+ * Resolves the Antigravity CLI (`agy`) binary across standard macOS & Linux install paths.
+ */
+function resolveAgyBinary() {
+  if (process.env.AGY_BIN && fs.existsSync(process.env.AGY_BIN)) {
+    return process.env.AGY_BIN;
+  }
+  const candidates = [
+    path.join(os.homedir(), '.gemini', 'bin', 'agy'),
+    path.join(os.homedir(), '.local', 'bin', 'agy'),
+    '/opt/homebrew/bin/agy',
+    '/usr/local/bin/agy',
+    '/usr/bin/agy',
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return process.env.AGY_BIN || 'agy';
+}
+
+/**
  * Generates a macOS Seatbelt (`.sb`) profile enforcing strict repo & secret blindness
  * while allowing `node` / `agy` execution inside `sandboxRoot`.
  */
@@ -184,8 +206,11 @@ function buildLinuxBwrapArgs({ sandboxRoot, workspaceDir, toolsDir, outputDir, h
 /**
  * Builds the stripped environment passed into the sandboxed child process.
  */
-function buildSanitizedSandboxEnv({ homeDir, tmpDir, proxyUrl, taskNonce }) {
-  const safePath = [
+function buildSanitizedSandboxEnv({ homeDir, tmpDir, proxyUrl, taskNonce, extraPathDirs = [] }) {
+  const hostGeminiBin = path.join(os.homedir(), '.gemini', 'bin');
+  const pathParts = [
+    ...extraPathDirs.filter(Boolean),
+    ...(fs.existsSync(hostGeminiBin) ? [hostGeminiBin] : []),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
@@ -193,7 +218,8 @@ function buildSanitizedSandboxEnv({ homeDir, tmpDir, proxyUrl, taskNonce }) {
     '/usr/sbin',
     '/sbin',
     path.dirname(process.execPath),
-  ].join(':');
+  ];
+  const safePath = Array.from(new Set(pathParts)).join(':');
 
   const env = {
     PATH: safePath,
@@ -207,7 +233,7 @@ function buildSanitizedSandboxEnv({ homeDir, tmpDir, proxyUrl, taskNonce }) {
     RAPIDER_TASK_NONCE: String(taskNonce || ''),
   };
 
-  // Preserve Antigravity CLI binary lookup if custom AGY_PATH is set, without leaking secrets
+  // Preserve Antigravity CLI binary lookup if custom AGY_BIN_DIR is set, without leaking secrets
   if (process.env.AGY_BIN_DIR) {
     env.PATH = `${process.env.AGY_BIN_DIR}:${env.PATH}`;
   }
@@ -279,23 +305,40 @@ function runInOsSandbox({
     const textStream = fs.createWriteStream(textLogPath, { flags: 'a' });
     const jsonlStream = fs.createWriteStream(jsonlLogPath, { flags: 'a' });
 
+    const resolvedAgyBin = resolveAgyBinary();
     const targetCmd = commandSpec
       ? commandSpec.command
-      : process.env.AGY_BIN || 'agy';
+      : resolvedAgyBin;
+    const effectivePrompt =
+      promptText ||
+      'Read AGENTS.md and TASK_BRIEF.md, execute the assigned Workspace task, save deliverables to ../output/deliverables/, and write ../output/task-outcome.json.';
     const targetArgs = commandSpec
       ? commandSpec.args || []
       : [
-          'chat',
-          '--mode',
-          'agent',
-          '--print',
           '--output-format',
           'stream-json',
-          '--workspace',
-          workspaceDir,
-          promptText ||
-            'Read AGENTS.md and TASK_BRIEF.md, execute the assigned Workspace task, save deliverables to ../output/deliverables/, and write ../output/task-outcome.json.',
+          '--dangerously-skip-permissions',
+          '--log-file',
+          path.join(logsDir, 'agy-cli.log'),
+          '--add-dir',
+          outputDir,
+          '--add-dir',
+          toolsDir,
+          `--print=${effectivePrompt}`,
         ];
+
+    // On macOS, link <sandboxHome>/.gemini -> ~/.gemini so `agy` reads its CLI auth/config
+    // while keeping $HOME isolated inside <sandbox>/home.
+    if (platform === 'darwin' && homeDir) {
+      const hostGemini = path.join(os.homedir(), '.gemini');
+      const sandboxGeminiLink = path.join(homeDir, '.gemini');
+      if (fs.existsSync(hostGemini) && !fs.existsSync(sandboxGeminiLink)) {
+        try {
+          fs.mkdirSync(homeDir, { recursive: true });
+          fs.symlinkSync(hostGemini, sandboxGeminiLink, 'dir');
+        } catch (_) {}
+      }
+    }
 
     let spawnBin = targetCmd;
     let spawnArgs = targetArgs;
@@ -342,6 +385,7 @@ function runInOsSandbox({
       tmpDir,
       proxyUrl,
       taskNonce,
+      extraPathDirs: path.isAbsolute(resolvedAgyBin) ? [path.dirname(resolvedAgyBin)] : [],
     });
 
     const startedAtMs = Date.now();
@@ -406,15 +450,20 @@ function runInOsSandbox({
         try {
           const parsed = JSON.parse(trimmed);
           jsonlStream.write(trimmed + '\n');
-          if (!conversationId && parsed.conversationId) {
-            conversationId = String(parsed.conversationId);
+          if (!conversationId) {
+            const cid = parsed.conversationId || parsed.conversation_id || parsed.session_id;
+            if (cid) conversationId = String(cid);
           }
           const summary =
             parsed.content ||
+            parsed.result ||
+            parsed.message?.content?.[0]?.text ||
             parsed.message ||
             parsed.type ||
             trimmed.slice(0, 240);
-          appendTail(String(summary).slice(0, 400));
+          appendTail(
+            (typeof summary === 'string' ? summary : JSON.stringify(summary)).slice(0, 400)
+          );
         } catch (_) {
           appendTail(trimmed.slice(0, 400));
         }
@@ -468,6 +517,7 @@ function runInOsSandbox({
 
 module.exports = {
   resolveCanonicalPath,
+  resolveAgyBinary,
   buildDarwinSeatbeltProfile,
   buildLinuxBwrapArgs,
   buildSanitizedSandboxEnv,
