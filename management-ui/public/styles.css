@@ -3,6 +3,116 @@
 :root {
   --primary: #2563eb;
   --danger: #dc2626;
+  --inspector-drawer-width: clamp(400px, 42vw, 680px);
+}
+
+html,
+body {
+  overflow-x: clip;
+}
+
+/* Split Push-Drawer Shell (Right Drawer pushes left content; no backdrop blur or overlap) */
+.dashboard-shell.hidden,
+.inspector-push-drawer.hidden {
+  display: none !important;
+}
+
+.dashboard-shell:not(.hidden) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-height: 100vh;
+}
+
+.dashboard-main-pane {
+  flex: 1 1 0%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.inspector-push-drawer:not(.hidden) {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-height: 80vh;
+  border-top: 1px solid #e2e8f0;
+  border-left: 0;
+  background-color: #ffffff;
+  overflow: hidden;
+}
+
+.inspector-resize-handle {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .dashboard-shell:not(.hidden) {
+    flex-direction: row;
+  }
+
+  .inspector-push-drawer:not(.hidden) {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    max-height: 100vh;
+    width: var(--inspector-drawer-width, clamp(400px, 42vw, 680px));
+    min-width: 360px;
+    max-width: 58vw;
+    flex-shrink: 0;
+    border-top: 0;
+    border-left: 1px solid #e2e8f0;
+    box-shadow: -4px 0 16px rgba(15, 23, 42, 0.04);
+  }
+
+  .inspector-resize-handle {
+    display: block;
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: col-resize;
+    z-index: 20;
+    transition: background-color 0.15s ease;
+  }
+
+  .inspector-resize-handle:hover,
+  .inspector-resize-handle.is-resizing {
+    background-color: rgba(37, 99, 235, 0.35);
+  }
+}
+
+/* Active task cards grid adapts cleanly when pushed by right drawer */
+.active-tasks-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+@media (min-width: 1024px) {
+  .dashboard-shell:not(.drawer-open) .active-tasks-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1580px) {
+  .dashboard-shell.drawer-open .active-tasks-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Highlight active task row/card currently open in right push drawer */
+.task-row-selected {
+  background-color: rgba(239, 246, 255, 0.78) !important;
+  box-shadow: inset 3px 0 0 0 #2563eb;
+}
+
+.task-card-selected {
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
 }
 
 /* AGENTS.md Strict Rule: Primary & Danger Buttons MUST ALWAYS have white text */

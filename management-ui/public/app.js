@@ -383,6 +383,7 @@
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
+    closeLogDrawer();
     document.getElementById('dashboardView').classList.add('hidden');
     document.getElementById('authView').classList.remove('hidden');
 
@@ -602,7 +603,7 @@
       return;
     }
 
-    container.innerHTML = `<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    container.innerHTML = `<div class="active-tasks-grid">
       ${list
         .map((t) => {
           const run = t.execution || {};
@@ -620,9 +621,13 @@
           const tail = escapeHtml(
             (run.logTail || 'Staging sandbox...').trim().split('\n').slice(-5).join('\n')
           );
+          const isSelected = state.logViewer.open && state.logViewer.workItemId === t.id;
 
-          return `<div class="rounded-xl border border-blue-200 bg-blue-50/20 p-4 flex flex-col gap-3">
-            <div class="flex items-start justify-between gap-2">
+          return `<div
+            data-task-card-id="${escapeHtml(t.id)}"
+            class="rounded-xl border border-blue-200 bg-blue-50/20 p-4 flex flex-col gap-3 min-w-0 ${isSelected ? 'task-card-selected' : ''}"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="min-w-0">
                 <div class="flex items-center gap-2 mb-1">
                   ${statusBadgeHtml(run.status || t.status)}
@@ -760,19 +765,20 @@
       .map((item) => {
         const exactPrompt = extractExactUserRequest(item);
         const descPreview = extractTaskDescriptionPreview(item, 170);
+        const isSelected = state.logViewer.open && state.logViewer.workItemId === item.id;
 
         return `<tr
           draggable="${term ? 'false' : 'true'}"
           data-queue-row-id="${escapeHtml(item.id)}"
-          class="hover:bg-slate-50/90 transition"
+          class="hover:bg-slate-50/90 transition ${isSelected ? 'task-row-selected' : ''}"
         >
-          <td class="py-3 px-4 font-bold text-slate-700 whitespace-nowrap">
+          <td class="py-3 px-3.5 font-bold text-slate-700 whitespace-nowrap">
             <span class="inline-flex items-center gap-1.5 cursor-grab text-slate-400 mr-1" title="Drag row to reorder">
               <i class="fas fa-grip-vertical"></i>
             </span>
             #${escapeHtml(item.rank)}
           </td>
-          <td class="py-3 px-4">
+          <td class="py-3 px-3.5 min-w-[200px] max-w-md">
             <button
               type="button"
               data-open-details="${escapeHtml(item.id)}"
@@ -792,10 +798,10 @@
               ${escapeHtml(descPreview || '—')}
             </div>
           </td>
-          <td class="py-3 px-4 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
-          <td class="py-3 px-4">${statusBadgeHtml(item.status)}</td>
-          <td class="py-3 px-4 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(item.occurredAt || item.createdDate))}</td>
-          <td class="py-3 px-4 text-right whitespace-nowrap">
+          <td class="py-3 px-3.5 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
+          <td class="py-3 px-3.5 whitespace-nowrap">${statusBadgeHtml(item.status)}</td>
+          <td class="py-3 px-3.5 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(item.occurredAt || item.createdDate))}</td>
+          <td class="py-3 px-3.5 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1">
               <button
                 type="button"
@@ -901,8 +907,13 @@
           160
         );
 
-        return `<tr class="hover:bg-slate-50/90 transition">
-          <td class="py-3 px-4">
+        const isSelected = state.logViewer.open && state.logViewer.workItemId === item.id;
+
+        return `<tr
+          data-history-row-id="${escapeHtml(item.id)}"
+          class="hover:bg-slate-50/90 transition ${isSelected ? 'task-row-selected' : ''}"
+        >
+          <td class="py-3 px-3.5 min-w-[200px] max-w-md">
             <button
               type="button"
               data-open-details="${escapeHtml(item.id)}"
@@ -922,12 +933,12 @@
               ${escapeHtml(outcomeText || extractTaskDescriptionPreview(item, 150) || '—')}
             </div>
           </td>
-          <td class="py-3 px-4 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
-          <td class="py-3 px-4">
+          <td class="py-3 px-3.5 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
+          <td class="py-3 px-3.5 whitespace-nowrap">
             ${statusBadgeHtml(item.status)}
             ${duration ? `<div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(duration)}</div>` : ''}
           </td>
-          <td class="py-3 px-4">
+          <td class="py-3 px-3.5">
             <div class="flex flex-col gap-1">
               <span class="text-[11px] text-slate-600">
                 <i class="fas fa-paperclip text-slate-400 mr-1"></i>${filesCount} file(s)
@@ -940,8 +951,8 @@
                 .join('')}
             </div>
           </td>
-          <td class="py-3 px-4 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(run.finishedAt || item.updatedDate || item.createdDate))}</td>
-          <td class="py-3 px-4 text-right whitespace-nowrap">
+          <td class="py-3 px-3.5 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(run.finishedAt || item.updatedDate || item.createdDate))}</td>
+          <td class="py-3 px-3.5 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1.5">
               <button
                 type="button"
@@ -1232,6 +1243,28 @@
     }
   }
 
+  function syncSelectedTaskHighlight() {
+    const activeId = state.logViewer.open ? state.logViewer.workItemId : '';
+    document.querySelectorAll('[data-queue-row-id]').forEach((row) => {
+      row.classList.toggle(
+        'task-row-selected',
+        Boolean(activeId && row.getAttribute('data-queue-row-id') === activeId)
+      );
+    });
+    document.querySelectorAll('[data-history-row-id]').forEach((row) => {
+      row.classList.toggle(
+        'task-row-selected',
+        Boolean(activeId && row.getAttribute('data-history-row-id') === activeId)
+      );
+    });
+    document.querySelectorAll('[data-task-card-id]').forEach((card) => {
+      card.classList.toggle(
+        'task-card-selected',
+        Boolean(activeId && card.getAttribute('data-task-card-id') === activeId)
+      );
+    });
+  }
+
   function openLogDrawer(workItemId, title, initialType = 'details') {
     const task = findTaskById(workItemId);
     state.logViewer = {
@@ -1244,12 +1277,16 @@
       title || task?.title || 'Task Details & Execution Logs';
     document.getElementById('logDrawerSubtitle').textContent = `Task ID: ${workItemId}`;
     document.getElementById('logDrawerBackdrop').classList.remove('hidden');
+    document.getElementById('dashboardView').classList.add('drawer-open');
+    syncSelectedTaskHighlight();
     loadAndRenderDrawerLog();
   }
 
   function closeLogDrawer() {
     state.logViewer.open = false;
     document.getElementById('logDrawerBackdrop').classList.add('hidden');
+    document.getElementById('dashboardView').classList.remove('drawer-open');
+    syncSelectedTaskHighlight();
   }
 
   // ---------------------------------------------------------------------------
@@ -1395,13 +1432,65 @@
       }
     });
 
-    // Drawer events
+    // Right push drawer events & drag-resize handle
     document.getElementById('closeLogDrawerBtn').addEventListener('click', closeLogDrawer);
-    document.getElementById('logDrawerBackdrop').addEventListener('click', (ev) => {
-      if (ev.target.id === 'logDrawerBackdrop') {
-        closeLogDrawer();
+    try {
+      const savedDrawerWidth = parseInt(
+        localStorage.getItem('rapider_task_inspector_width') || '',
+        10
+      );
+      if (Number.isFinite(savedDrawerWidth) && savedDrawerWidth >= 360) {
+        document.documentElement.style.setProperty(
+          '--inspector-drawer-width',
+          `${savedDrawerWidth}px`
+        );
       }
-    });
+    } catch (_) {}
+
+    const resizeHandle = document.getElementById('logDrawerResizeHandle');
+    if (resizeHandle) {
+      resizeHandle.addEventListener('mousedown', (startEv) => {
+        if (window.innerWidth < 768) return;
+        startEv.preventDefault();
+        resizeHandle.classList.add('is-resizing');
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+
+        const onMouseMove = (moveEv) => {
+          const maxWidth = Math.floor(window.innerWidth * 0.58);
+          const nextWidth = Math.max(
+            360,
+            Math.min(maxWidth, window.innerWidth - moveEv.clientX)
+          );
+          document.documentElement.style.setProperty(
+            '--inspector-drawer-width',
+            `${nextWidth}px`
+          );
+        };
+
+        const onMouseUp = () => {
+          resizeHandle.classList.remove('is-resizing');
+          document.body.style.userSelect = '';
+          document.body.style.cursor = '';
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+          try {
+            const currentWidth = document
+              .getElementById('logDrawerBackdrop')
+              ?.getBoundingClientRect().width;
+            if (currentWidth && currentWidth >= 360) {
+              localStorage.setItem(
+                'rapider_task_inspector_width',
+                String(Math.round(currentWidth))
+              );
+            }
+          } catch (_) {}
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+      });
+    }
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape' && state.logViewer.open) {
         closeLogDrawer();

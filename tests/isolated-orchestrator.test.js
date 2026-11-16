@@ -454,6 +454,10 @@ test('IsolatedTaskOrchestrator dynamic concurrency & Management UI server gatewa
   assert.equal(indexRes.status, 200);
   const html = await indexRes.text();
   assert.match(html, /Task Orchestrator Console/);
+  assert.match(html, /id="dashboardMainPane"/);
+  assert.match(html, /<aside[\s\S]*?id="logDrawerBackdrop"[\s\S]*?inspector-push-drawer/);
+  assert.doesNotMatch(html, /id="logDrawerBackdrop"[^>]*fixed inset-0/);
+  assert.doesNotMatch(html, /id="logDrawerBackdrop"[^>]*bg-slate-900\/50/);
 
   const forbiddenRes = await fetch(`http://127.0.0.1:${uiPort}/api/admin/task-orchestrator/me`, {
     headers: { Authorization: 'Bearer non-admin' },
