@@ -90,6 +90,8 @@ class IsolatedTaskOrchestrator {
 
     this.maxConcurrent =
       Number(options.initialMaxConcurrent || process.env.MAX_CONCURRENT) || 5;
+    this.maxClaimLimit =
+      Number(options.maxClaimLimit || process.env.MAX_CLAIM_LIMIT) || 0;
     this.pollIntervalSeconds =
       Number(options.pollIntervalSeconds || process.env.POLL_INTERVAL_SECONDS) || 10;
     this.sandboxRetentionCount =
@@ -605,7 +607,11 @@ class IsolatedTaskOrchestrator {
       return 0;
     }
 
-    const localAvailableSlots = Math.max(0, this.maxConcurrent - this.activeRuns.size);
+    const rawAvailableSlots = Math.max(0, this.maxConcurrent - this.activeRuns.size);
+    const localAvailableSlots =
+      this.maxClaimLimit > 0
+        ? Math.min(rawAvailableSlots, this.maxClaimLimit)
+        : rawAvailableSlots;
     if (localAvailableSlots <= 0) {
       return 0;
     }
@@ -642,7 +648,20 @@ class IsolatedTaskOrchestrator {
       const pending = Array.from(this.activeRuns.values())
         .map((r) => r.promise)
         .filter(Boolean);
-      await Promise.allSettled(pending);
+      const hbTimer =
+        pending.length > 0 && !this.customApiHandler
+          ? setInterval(() => {
+              this.sendHeartbeat().catch(() => {});
+            }, 5000)
+          : null;
+      if (hbTimer && typeof hbTimer.unref === 'function') {
+        hbTimer.unref();
+      }
+      try {
+        await Promise.allSettled(pending);
+      } finally {
+        if (hbTimer) clearInterval(hbTimer);
+      }
       await this.sendHeartbeat('offline').catch(() => {});
       await this.proxyServer.stop();
       return;
@@ -685,11 +704,13 @@ class IsolatedTaskOrchestrator {
 if (require.main === module) {
   const args = process.argv.slice(2);
   const initialMax = getArg(args, 'max-concurrent');
+  const limitArg = getArg(args, 'limit');
   const orchestrator = new IsolatedTaskOrchestrator({
     once: hasFlag(args, 'once'),
     offline: hasFlag(args, 'offline'),
     projectFilter: getArg(args, 'project'),
     ...(initialMax ? { initialMaxConcurrent: Number(initialMax) } : {}),
+    ...(limitArg ? { maxClaimLimit: Number(limitArg) } : {}),
   });
 
   orchestrator.start().catch((err) => {
