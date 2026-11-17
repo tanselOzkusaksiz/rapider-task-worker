@@ -47,7 +47,11 @@ const {
 const { parkAllWorkspaceRepos } = require('./manage-workspace-repos');
 const { ScopedTaskProxyServer } = require('./scoped-task-proxy');
 const { stageTaskSandbox } = require('./stage-task-sandbox');
-const { runInOsSandbox } = require('./sandbox-runner');
+const {
+  DEFAULT_TASK_WORKER_MODEL,
+  sanitizeModelId,
+  runInOsSandbox,
+} = require('./sandbox-runner');
 const { harvestSandboxResults } = require('./harvest-repo-changes');
 const { uploadTaskArtifacts } = require('./upload-task-artifacts');
 
@@ -96,6 +100,13 @@ class IsolatedTaskOrchestrator {
       Number(options.pollIntervalSeconds || process.env.POLL_INTERVAL_SECONDS) || 10;
     this.sandboxRetentionCount =
       Number(options.sandboxRetentionCount || process.env.SANDBOX_RETENTION_COUNT) || 20;
+    this.defaultModel =
+      sanitizeModelId(
+        options.initialModel || process.env.TASK_WORKER_MODEL || process.env.AGY_MODEL
+      ) || DEFAULT_TASK_WORKER_MODEL;
+    this.syncStartupModel = Boolean(
+      options.syncStartupModel && sanitizeModelId(options.initialModel)
+    );
 
     this.paused = false;
     this.hardPaused = false;
@@ -298,6 +309,7 @@ class IsolatedTaskOrchestrator {
       pid: process.pid,
       activeCount: this.activeRuns.size,
       activeWorkItemIds: Array.from(this.activeRuns.keys()),
+      defaultModelObserved: this.defaultModel,
       startedAt: this.startedAt,
       status: statusOverride || (this.stopping ? 'draining' : 'online'),
       ackSignalIds: ackIds,
@@ -314,6 +326,10 @@ class IsolatedTaskOrchestrator {
       }
       if (typeof resp.state.sandboxRetentionCount === 'number') {
         this.sandboxRetentionCount = resp.state.sandboxRetentionCount;
+      }
+      const remoteModel = sanitizeModelId(resp.state.defaultModel);
+      if (remoteModel) {
+        this.defaultModel = remoteModel;
       }
     }
 
@@ -398,10 +414,18 @@ class IsolatedTaskOrchestrator {
         return;
       }
 
+      const taskModel =
+        sanitizeModelId(workItem?.preferredModel) ||
+        sanitizeModelId(claimedEntry.resolvedModel) ||
+        sanitizeModelId(execution?.resolvedModel) ||
+        this.defaultModel ||
+        DEFAULT_TASK_WORKER_MODEL;
+
       // 2. Stage isolated multi-repo sandbox (master repos stay parked on `idle`!)
       await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: 'staging',
-        logTail: `[${new Date().toISOString()}] Staging isolated multi-repo sandbox for Workspace ${workspaceBootstrap.workspaceName || workItem.projectId}...\n`,
+        resolvedModel: taskModel,
+        logTail: `[${new Date().toISOString()}] Staging isolated multi-repo sandbox for Workspace ${workspaceBootstrap.workspaceName || workItem.projectId} (model=${taskModel})...\n`,
       });
 
       const events = await this.fetchWorkItemEvents(workItem.projectId, workItem.id);
@@ -429,6 +453,7 @@ class IsolatedTaskOrchestrator {
 
       await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: 'running',
+        resolvedModel: taskModel,
         stagedRepos: manifest.stagedRepos.map((r) => ({
           mountRelPath: r.mountRelPath,
           repoKey: r.repoKey,
@@ -441,6 +466,7 @@ class IsolatedTaskOrchestrator {
         manifest,
         proxyUrl: lease.proxyUrl,
         taskNonce: lease.nonce,
+        model: taskModel,
         commandSpec: this.customCommandSpec,
         sandboxesRoot: this.sandboxesRoot,
         workspacesRoot: this.workspacesRoot,
@@ -590,6 +616,7 @@ class IsolatedTaskOrchestrator {
       await this.adminApiReliable('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: finalStatus,
         taskCategory: outcome.taskCategory || 'general',
+        resolvedModel: taskModel,
         exitCode: execResult.exitCode,
         conversationId: execResult.conversationId || undefined,
         pushedBranches: harvested.pushedBranches,
@@ -656,6 +683,10 @@ class IsolatedTaskOrchestrator {
     if (typeof claimRes?.maxConcurrent === 'number') {
       this.maxConcurrent = claimRes.maxConcurrent;
     }
+    const claimDefaultModel = sanitizeModelId(claimRes?.defaultModel);
+    if (claimDefaultModel) {
+      this.defaultModel = claimDefaultModel;
+    }
 
     const claimed = Array.isArray(claimRes?.claimed) ? claimRes.claimed : [];
     for (const entry of claimed) {
@@ -671,6 +702,14 @@ class IsolatedTaskOrchestrator {
     // Park all persistent Workspace checkouts onto `idle` at startup
     parkAllWorkspaceRepos({ workspacesRoot: this.workspacesRoot });
     await this.proxyServer.start();
+
+    if (this.syncStartupModel) {
+      await this.adminApi('PATCH', '/admin/task-orchestrator/config', {
+        defaultModel: this.defaultModel,
+      }).catch((err) => {
+        console.warn(`[TaskOrchestrator] Could not sync startup --model to server: ${err.message}`);
+      });
+    }
 
     if (this.once) {
       await this.pollAndDispatchOnce();
@@ -714,7 +753,7 @@ class IsolatedTaskOrchestrator {
     process.once('SIGTERM', () => handleShutdown('SIGTERM'));
 
     console.log(
-      `[TaskOrchestrator] Online | workerId=${this.workerId} | platform=${process.platform} | proxy=${this.proxyServer.getBaseUrl()}`
+      `[TaskOrchestrator] Online | workerId=${this.workerId} | platform=${process.platform} | defaultModel=${this.defaultModel} | proxy=${this.proxyServer.getBaseUrl()}`
     );
 
     while (!this.stopping) {
@@ -734,12 +773,14 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const initialMax = getArg(args, 'max-concurrent');
   const limitArg = getArg(args, 'limit');
+  const modelArg = getArg(args, 'model');
   const orchestrator = new IsolatedTaskOrchestrator({
     once: hasFlag(args, 'once'),
     offline: hasFlag(args, 'offline'),
     projectFilter: getArg(args, 'project'),
     ...(initialMax ? { initialMaxConcurrent: Number(initialMax) } : {}),
     ...(limitArg ? { maxClaimLimit: Number(limitArg) } : {}),
+    ...(modelArg ? { initialModel: modelArg, syncStartupModel: true } : {}),
   });
 
   orchestrator.start().catch((err) => {

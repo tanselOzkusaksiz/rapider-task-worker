@@ -11,7 +11,10 @@ const {
 } = require('../scripts/manage-workspace-repos');
 const { ScopedTaskProxyServer } = require('../scripts/scoped-task-proxy');
 const { stageTaskSandbox } = require('../scripts/stage-task-sandbox');
-const { runInOsSandbox } = require('../scripts/sandbox-runner');
+const {
+  DEFAULT_TASK_WORKER_MODEL,
+  runInOsSandbox,
+} = require('../scripts/sandbox-runner');
 const { harvestSandboxResults } = require('../scripts/harvest-repo-changes');
 const { IsolatedTaskOrchestrator } = require('../scripts/isolated-task-orchestrator');
 const { createManagementUiServer } = require('../management-ui/server');
@@ -455,6 +458,8 @@ test('IsolatedTaskOrchestrator dynamic concurrency & Management UI server gatewa
   const html = await indexRes.text();
   assert.match(html, /Task Orchestrator Console/);
   assert.match(html, /id="dashboardMainPane"/);
+  assert.match(html, /id="defaultModelSelect"/);
+  assert.match(html, /id="newTaskModel"/);
   assert.match(html, /<aside[\s\S]*?id="logDrawerBackdrop"[\s\S]*?inspector-push-drawer/);
   assert.doesNotMatch(html, /id="logDrawerBackdrop"[^>]*fixed inset-0/);
   assert.doesNotMatch(html, /id="logDrawerBackdrop"[^>]*bg-slate-900\/50/);
@@ -468,4 +473,192 @@ test('IsolatedTaskOrchestrator dynamic concurrency & Management UI server gatewa
     headers: { Authorization: 'Bearer valid-admin-jwt' },
   });
   assert.equal(allowedRes.status, 200);
+});
+
+test('Worker model precedence: default gemini-3.8-flash-medium, live orchestrator sync & per-task override', async (t) => {
+  assert.equal(DEFAULT_TASK_WORKER_MODEL, 'gemini-3.8-flash-medium');
+
+  const tmpDir = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'rapider-orch-model-'))
+  );
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const sandboxesRoot = path.join(tmpDir, '_sandboxes');
+  const workspacesRoot = path.join(tmpDir, 'WORKSPACES');
+  const appsCloneRoot = path.join(tmpDir, 'APPS');
+  const bareCacheRoot = path.join(tmpDir, '_cache');
+
+  // 1. Verify runInOsSandbox passes --model gemini-3.8-flash-medium by default and custom model when passed
+  const manifest = await stageTaskSandbox({
+    workItem: {
+      id: 'wi-model-probe',
+      projectId: 'proj-model',
+      title: 'Probe AGY --model flag',
+      bodyMarkdown: 'Verify CLI model flag.',
+    },
+    runId: 'run-model-probe',
+    workspaceBootstrap: {
+      workspaceName: 'Model Probe WS',
+      installedAppKeys: [],
+    },
+    sandboxesRoot,
+    workspacesRoot,
+    appsCloneRoot,
+    bareCacheRoot,
+    offline: true,
+  });
+
+  const fakeAgyPath = path.join(manifest.toolsDir, 'fake-agy.sh');
+  const capturedArgsFile = path.join(manifest.outputDir, 'captured-agy-args.json');
+  fs.writeFileSync(
+    fakeAgyPath,
+    [
+      '#!/bin/sh',
+      `exec "${process.execPath}" -e 'const fs=require("fs"); fs.writeFileSync(${JSON.stringify(capturedArgsFile)}, JSON.stringify(process.argv.slice(1)));' -- "$@"`,
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+  fs.chmodSync(fakeAgyPath, 0o755);
+
+  const prevAgyBin = process.env.AGY_BIN;
+  const prevTaskWorkerModel = process.env.TASK_WORKER_MODEL;
+  delete process.env.TASK_WORKER_MODEL;
+  process.env.AGY_BIN = fakeAgyPath;
+  t.after(() => {
+    if (prevAgyBin === undefined) delete process.env.AGY_BIN;
+    else process.env.AGY_BIN = prevAgyBin;
+    if (prevTaskWorkerModel === undefined) delete process.env.TASK_WORKER_MODEL;
+    else process.env.TASK_WORKER_MODEL = prevTaskWorkerModel;
+  });
+
+  const defaultExec = await runInOsSandbox({
+    manifest,
+    proxyUrl: 'http://127.0.0.1:0',
+    taskNonce: 'nonce-default',
+    sandboxesRoot,
+    workspacesRoot,
+    appsCloneRoot,
+    bareCacheRoot,
+  });
+  assert.equal(defaultExec.exitCode, 0, defaultExec.logTail);
+  assert.equal(defaultExec.model, 'gemini-3.8-flash-medium');
+  const defaultArgs = JSON.parse(fs.readFileSync(capturedArgsFile, 'utf8'));
+  const defaultModelIdx = defaultArgs.indexOf('--model');
+  assert.ok(defaultModelIdx >= 0);
+  assert.equal(defaultArgs[defaultModelIdx + 1], 'gemini-3.8-flash-medium');
+
+  const overrideExec = await runInOsSandbox({
+    manifest,
+    proxyUrl: 'http://127.0.0.1:0',
+    taskNonce: 'nonce-override',
+    model: 'claude-sonnet-5-5-medium',
+    sandboxesRoot,
+    workspacesRoot,
+    appsCloneRoot,
+    bareCacheRoot,
+  });
+  assert.equal(overrideExec.exitCode, 0, overrideExec.logTail);
+  assert.equal(overrideExec.model, 'claude-sonnet-5-5-medium');
+  const overrideArgs = JSON.parse(fs.readFileSync(capturedArgsFile, 'utf8'));
+  const overrideModelIdx = overrideArgs.indexOf('--model');
+  assert.ok(overrideModelIdx >= 0);
+  assert.equal(overrideArgs[overrideModelIdx + 1], 'claude-sonnet-5-5-medium');
+
+  // 2. Verify IsolatedTaskOrchestrator syncs startup --model, adopts live heartbeat defaultModel,
+  //    and prioritizes per-task preferredModel over live defaultModel
+  const configPatches = [];
+  const runUpdates = [];
+  let claimedOnce = false;
+
+  const orch = new IsolatedTaskOrchestrator({
+    workerId: 'model-test-worker',
+    once: true,
+    offline: true,
+    initialModel: 'gemini-3.8-flash-medium',
+    syncStartupModel: true,
+    sandboxesRoot,
+    workspacesRoot,
+    appsCloneRoot,
+    bareCacheRoot,
+    customCommandSpec: {
+      command: process.execPath,
+      args: [
+        '-e',
+        `const fs=require("fs"); fs.writeFileSync("../output/task-outcome.json", JSON.stringify({status:"resolved", outcomeSummary:"Done", publicReplyMarkdown:"Completed.", deliverableFiles:[]}));`,
+      ],
+    },
+    customAdminApiHandler: async (method, endpoint, body) => {
+      if (method === 'PATCH' && endpoint === '/admin/task-orchestrator/config') {
+        configPatches.push(body);
+        return { ok: true, state: { defaultModel: body.defaultModel } };
+      }
+      if (endpoint.endsWith('/worker/heartbeat')) {
+        return {
+          ok: true,
+          state: {
+            maxConcurrent: 5,
+            paused: false,
+            hardPaused: false,
+            pollIntervalSeconds: 5,
+            sandboxRetentionCount: 5,
+            defaultModel: 'gemini-4-argon-high',
+          },
+          signals: [],
+        };
+      }
+      if (endpoint.endsWith('/worker/claim')) {
+        if (claimedOnce) return { ok: true, maxConcurrent: 5, defaultModel: 'gemini-4-argon-high', claimed: [] };
+        claimedOnce = true;
+        return {
+          ok: true,
+          maxConcurrent: 5,
+          defaultModel: 'gemini-4-argon-high',
+          claimed: [
+            {
+              workItem: {
+                id: 'wi-inherit-default',
+                projectId: 'proj-demo',
+                title: 'Inherit Live Default',
+                bodyMarkdown: 'Uses live defaultModel from orchestrator.',
+              },
+              execution: { id: 'run-inherit' },
+              workspaceBootstrap: { workspaceName: 'Demo', installedAppKeys: [] },
+            },
+            {
+              workItem: {
+                id: 'wi-task-override',
+                projectId: 'proj-demo',
+                title: 'Task Specific Override',
+                preferredModel: 'claude-opus-5-5-medium',
+                bodyMarkdown: 'Uses explicit per-task preferredModel.',
+              },
+              execution: { id: 'run-override' },
+              workspaceBootstrap: { workspaceName: 'Demo', installedAppKeys: [] },
+            },
+          ],
+        };
+      }
+      if (method === 'PATCH' && endpoint.includes('/worker/runs/')) {
+        runUpdates.push({ endpoint, body });
+        return { ok: true };
+      }
+      return { ok: true };
+    },
+  });
+
+  await orch.start();
+
+  assert.equal(configPatches.length, 1);
+  assert.equal(configPatches[0].defaultModel, 'gemini-3.8-flash-medium');
+  assert.equal(orch.defaultModel, 'gemini-4-argon-high');
+
+  const inheritRun = runUpdates.find(
+    (u) => u.endpoint.endsWith('/run-inherit') && u.body.status === 'running'
+  );
+  const overrideRun = runUpdates.find(
+    (u) => u.endpoint.endsWith('/run-override') && u.body.status === 'running'
+  );
+  assert.equal(inheritRun.body.resolvedModel, 'gemini-4-argon-high');
+  assert.equal(overrideRun.body.resolvedModel, 'claude-opus-5-5-medium');
 });

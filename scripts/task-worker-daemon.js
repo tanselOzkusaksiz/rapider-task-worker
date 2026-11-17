@@ -32,6 +32,7 @@ const {
 const { patchWorkItemTask } = require('./patch-workitem-task');
 const { generateIterationLog } = require('./generate-iteration-logs');
 const { DEFAULT_SCOPE_REJECTION_REPLY } = require('./security-and-scope-guardrail');
+const { DEFAULT_TASK_WORKER_MODEL, sanitizeModelId } = require('./sandbox-runner');
 
 const WORKER_ROOT = path.resolve(__dirname, '..');
 
@@ -74,6 +75,7 @@ async function runBatchDrainCycle({
   maxBatches = 10,
   headless = false,
   projectFilter = null,
+  defaultModel = null,
 } = {}) {
   let batchNumber = 0;
   let totalHandledInCycle = 0;
@@ -134,7 +136,12 @@ async function runBatchDrainCycle({
 
           const prompt = buildHeadlessAgentPrompt(task, activation);
           const cliBin = process.env.AGY_BIN || 'agy';
-          execFileSync(cliBin, ['-p', prompt], {
+          const taskModel =
+            sanitizeModelId(task.preferredModel) ||
+            sanitizeModelId(defaultModel) ||
+            sanitizeModelId(process.env.TASK_WORKER_MODEL) ||
+            DEFAULT_TASK_WORKER_MODEL;
+          execFileSync(cliBin, ['--model', taskModel, '-p', prompt], {
             cwd: WORKER_ROOT,
             stdio: 'inherit',
           });
@@ -191,9 +198,10 @@ if (require.main === module) {
   const intervalStr = getArg('interval') || process.env.TASK_WORKER_POLL_INTERVAL || '5m';
   const intervalMs = parseIntervalMs(intervalStr);
   const projectFilter = getArg('project');
+  const defaultModel = getArg('model');
 
   if (once) {
-    runBatchDrainCycle({ batchSize, maxBatches, headless, projectFilter })
+    runBatchDrainCycle({ batchSize, maxBatches, headless, projectFilter, defaultModel })
       .then(() => process.exit(0))
       .catch((err) => {
         console.error(`[Worker] Fatal error: ${err.message}`);
@@ -208,7 +216,7 @@ if (require.main === module) {
       busy = true;
       if (timer) clearTimeout(timer);
       try {
-        await runBatchDrainCycle({ batchSize, maxBatches, headless, projectFilter });
+        await runBatchDrainCycle({ batchSize, maxBatches, headless, projectFilter, defaultModel });
       } catch (err) {
         console.error(`[Worker] Cycle error: ${err.message}`);
       } finally {

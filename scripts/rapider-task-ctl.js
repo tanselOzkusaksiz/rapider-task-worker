@@ -10,6 +10,8 @@
  * Usage:
  *   node scripts/rapider-task-ctl.js status
  *   node scripts/rapider-task-ctl.js set-concurrency 10
+ *   node scripts/rapider-task-ctl.js set-model gemini-3.8-flash-medium
+ *   node scripts/rapider-task-ctl.js set-task-model <workItemId> <modelId|default>
  *   node scripts/rapider-task-ctl.js pause
  *   node scripts/rapider-task-ctl.js hard-pause
  *   node scripts/rapider-task-ctl.js resume
@@ -53,6 +55,8 @@ async function main() {
       '  status                        Show live concurrency, workers, active tasks & next 20 queue',
       '  history                       Show last 20 completed/failed/pending tasks',
       '  set-concurrency <1..100>      Change MAX_CONCURRENT live without restarting workers',
+      '  set-model <modelId>           Change live default worker model without restarting workers',
+      '  set-task-model <id> <model>   Set/clear per-task model override (pass "default" to reset)',
       '  pause                         Soft-pause new task claims (active tasks finish cleanly)',
       '  hard-pause                    Hard-pause & kill all active sandboxed PGIDs immediately',
       '  resume                        Resume task claiming',
@@ -77,6 +81,7 @@ async function main() {
     console.log(
       `State: ${overview.state.hardPaused ? 'HARD PAUSED' : overview.state.paused ? 'PAUSED' : 'RUNNING'} | ` +
         `Active: ${overview.metrics.activeCount}/${overview.metrics.maxConcurrent} | ` +
+        `Default Model: ${overview.state.defaultModel || 'gemini-3.8-flash-medium'} | ` +
         `Queued: ${overview.metrics.totalQueuedCount} | ` +
         `Online Workers: ${overview.metrics.onlineWorkersCount}`
     );
@@ -85,7 +90,8 @@ async function main() {
       console.log('  (none)');
     } else {
       for (const t of overview.activeTasks) {
-        console.log(`  * [${t.id}] ${t.title} (${t.workspaceName}) — worker=${t.execution?.workerId || 'n/a'}`);
+        const modelLabel = t.execution?.resolvedModel || t.preferredModel || overview.state.defaultModel || 'gemini-3.8-flash-medium';
+        console.log(`  * [${t.id}] ${t.title} (${t.workspaceName}) — worker=${t.execution?.workerId || 'n/a'} | model=${modelLabel}`);
       }
     }
     console.log('\n--- Next 20 Queued Tasks ---');
@@ -93,7 +99,7 @@ async function main() {
       console.log('  (empty queue)');
     } else {
       for (const q of overview.nextQueue) {
-        console.log(`  #${String(q.rank).padEnd(2)} [${q.id}] ${q.title} (${q.workspaceName})`);
+        console.log(`  #${String(q.rank).padEnd(2)} [${q.id}] ${q.title} (${q.workspaceName}) [model=${q.preferredModel || 'default'}]`);
       }
     }
     return;
@@ -103,8 +109,9 @@ async function main() {
     const res = await callAdmin('GET', '/admin/task-orchestrator/history?limit=20');
     console.log(`=== LAST ${res.count} FINISHED TASKS ===`);
     for (const h of res.history) {
+      const modelLabel = h.execution?.resolvedModel || h.preferredModel || 'n/a';
       console.log(
-        `  [${String(h.status).toUpperCase().padEnd(8)}] ${h.id} | ${h.title} (${h.workspaceName})`
+        `  [${String(h.status).toUpperCase().padEnd(8)}] ${h.id} | ${h.title} (${h.workspaceName}) | model=${modelLabel}`
       );
     }
     return;
@@ -119,6 +126,36 @@ async function main() {
       maxConcurrent: n,
     });
     console.log(`[OK] Live maxConcurrent updated to ${res.state.maxConcurrent}.`);
+    return;
+  }
+
+  if (cmd === 'set-model') {
+    if (!arg1) {
+      throw new Error('Usage: rapider-task-ctl.js set-model <modelId>');
+    }
+    const res = await callAdmin('PATCH', '/admin/task-orchestrator/config', {
+      defaultModel: arg1.trim(),
+    });
+    console.log(`[OK] Live defaultModel updated to ${res.state.defaultModel}.`);
+    return;
+  }
+
+  if (cmd === 'set-task-model') {
+    const rawModel = rest[0];
+    if (!arg1 || rawModel === undefined) {
+      throw new Error('Usage: rapider-task-ctl.js set-task-model <workItemId> <modelId|default>');
+    }
+    const trimmed = String(rawModel).trim();
+    const preferredModel =
+      !trimmed || trimmed === 'default' || trimmed === 'null' ? null : trimmed;
+    const res = await callAdmin(
+      'PATCH',
+      `/admin/task-orchestrator/tasks/${encodeURIComponent(arg1)}/model`,
+      { preferredModel }
+    );
+    console.log(
+      `[OK] Task ${res.workItemId} model set to ${res.preferredModel || `default (${res.effectiveModel})`}.`
+    );
     return;
   }
 

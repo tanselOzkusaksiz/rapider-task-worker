@@ -28,6 +28,15 @@ const { spawn, execFileSync } = require('child_process');
 const WORKER_ROOT = path.resolve(__dirname, '..');
 const MONOREPO_ROOT = path.resolve(WORKER_ROOT, '..');
 
+const DEFAULT_TASK_WORKER_MODEL = 'gemini-3.8-flash-medium';
+
+function sanitizeModelId(raw) {
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/.test(trimmed) ? trimmed : null;
+}
+
 function resolveCanonicalPath(targetPath) {
   if (!targetPath) return '';
   const abs = path.resolve(targetPath);
@@ -276,6 +285,7 @@ function runInOsSandbox({
   proxyUrl,
   taskNonce,
   promptText,
+  model = null,
   commandSpec = null,
   sandboxesRoot,
   workspacesRoot,
@@ -309,12 +319,19 @@ function runInOsSandbox({
     const targetCmd = commandSpec
       ? commandSpec.command
       : resolvedAgyBin;
+    const effectiveModel =
+      sanitizeModelId(model) ||
+      sanitizeModelId(process.env.TASK_WORKER_MODEL) ||
+      sanitizeModelId(process.env.AGY_MODEL) ||
+      DEFAULT_TASK_WORKER_MODEL;
     const effectivePrompt =
       promptText ||
       'Read AGENTS.md and TASK_BRIEF.md, execute the assigned Workspace task, save deliverables to ../output/deliverables/, and write ../output/task-outcome.json.';
     const targetArgs = commandSpec
       ? commandSpec.args || []
       : [
+          '--model',
+          effectiveModel,
           '--output-format',
           'stream-json',
           '--dangerously-skip-permissions',
@@ -389,7 +406,7 @@ function runInOsSandbox({
     });
 
     const startedAtMs = Date.now();
-    let rollingTail = `[${new Date().toISOString()}] Launching isolated task via ${jailMechanism}\n`;
+    let rollingTail = `[${new Date().toISOString()}] Launching isolated task via ${jailMechanism} (model=${effectiveModel})\n`;
     textStream.write(rollingTail);
 
     let conversationId = null;
@@ -514,6 +531,7 @@ function runInOsSandbox({
             timedOut,
             externallyKilled,
             jailMechanism,
+            model: effectiveModel,
             conversationId,
             durationMs: Date.now() - startedAtMs,
             textLogPath,
@@ -527,6 +545,8 @@ function runInOsSandbox({
 }
 
 module.exports = {
+  DEFAULT_TASK_WORKER_MODEL,
+  sanitizeModelId,
   resolveCanonicalPath,
   resolveAgyBinary,
   buildDarwinSeatbeltProfile,

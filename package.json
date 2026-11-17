@@ -16,6 +16,8 @@
     "ctl:hard-pause": "node scripts/rapider-task-ctl.js hard-pause",
     "ctl:resume": "node scripts/rapider-task-ctl.js resume",
     "ctl:concurrency": "node scripts/rapider-task-ctl.js set-concurrency",
+    "ctl:model": "node scripts/rapider-task-ctl.js set-model",
+    "ctl:task-model": "node scripts/rapider-task-ctl.js set-task-model",
     "ctl:pin-top": "node scripts/rapider-task-ctl.js pin-top",
     "ctl:kill-task": "node scripts/rapider-task-ctl.js kill-task",
     "ctl:requeue-top": "node scripts/rapider-task-ctl.js requeue-top",

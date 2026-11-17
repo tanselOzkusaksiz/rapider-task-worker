@@ -64,6 +64,8 @@ Run all commands below from `/Users/tanselozkusaksiz/Projects/Rappider/code/_rap
 | `npm run ctl:status` | `npm run ctl:status` | Prints global state (`RUNNING`/`PAUSED`), active slot count (`active/maxConcurrent`), online workers, active tasks, and **Next 20** queue. |
 | `npm run ctl:history` | `npm run ctl:history` | Prints the **Last 20** completed, pending, failed, rejected, or cancelled tasks. |
 | `npm run ctl:concurrency` | `npm run ctl:concurrency -- 10` | Live-updates `MAX_CONCURRENT` (`1..100`) in Rapider MongoDB; active workers scale immediately without restart. |
+| `npm run ctl:model` | `npm run ctl:model -- gemini-3.8-flash-medium` | Live-updates the orchestrator `defaultModel` in Rapider MongoDB without touching `~/.gemini/antigravity-cli/settings.json`. |
+| `npm run ctl:task-model` | `npm run ctl:task-model -- <workItemId> <modelId\|default>` | Pins a task-specific model override (`preferredModel`) or resets it to `default`. |
 | `npm run ctl:pause` | `npm run ctl:pause` | Soft-pauses new task claims while allowing currently running tasks to finish cleanly. |
 | `npm run ctl:hard-pause` | `npm run ctl:hard-pause` | Hard-stops claiming **and** dispatches `hard_pause_all` to terminate all active sandbox process groups (`-PGID`). |
 | `npm run ctl:resume` | `npm run ctl:resume` | Clears soft/hard pause flags and resumes claiming from the queue. |
@@ -166,12 +168,14 @@ _sandboxes/task-<workItemId>-<runShort>/
 - **Authentication & Authorization**:
   - Logs in against Rapider (`POST /api/users/login` -> `GET /api/users/people` -> `POST /api/users/change-active-person`) and verifies `GET /api/admin/task-orchestrator/me`.
   - Any user without `PermissionScope.Admin` (`"admin"` in `scope`) receives `403 Forbidden` on both the API and UI login screen.
-- **Separated Two-Tab Console**:
+- **Separated Two-Tab Console & Model Controls**:
+  - **Live Default Model Selector (`Default Model`)**: Change `TaskOrchestratorState.defaultModel` (`gemini-3.8-flash-medium` by default) live in the header without touching `~/.gemini/antigravity-cli/settings.json` or restarting workers.
+  - **Per-Task Model Overrides (`WorkItem.preferredModel`)**: Select a dedicated model when creating a task in `+ New Task`, inline on any queued row, or inside the Task Inspector drawer. Tasks without an override automatically inherit the orchestrator default model.
   - **Tab 1 — `Active & Queue (Next 20)`**:
-    - Live cards for currently **in-progress tasks** showing Workspace, worker node (`darwin` / `linux`), PID, staged repos, rolling `logTail` terminal, **`Logs`** button, and red **`Kill`** button.
-    - **Next 20 Queued Tasks** table supporting **HTML5 Drag-and-Drop reordering**, **`#1` (Pin to Top)**, **`↑` / `↓`**, search filter with `#activeFilterTagsBar` + `Clear all`, and **`Cancel`**.
+    - Live cards for currently **in-progress tasks** showing Workspace, active model badge, worker node (`darwin` / `linux`), PID, staged repos, rolling `logTail` terminal, **`Logs`** button, and red **`Kill`** button.
+    - **Next 20 Queued Tasks** table supporting **HTML5 Drag-and-Drop reordering**, inline per-task **Model** selector, **`#1` (Pin to Top)**, **`↑` / `↓`**, search filter with `#activeFilterTagsBar` + `Clear all`, and **`Cancel`**.
   - **Tab 2 — `Past History (Last 20)`**:
-    - **Last 20** finished/attention tasks (`resolved`, `pending`, `failed`, `rejected`, `cancelled`) with duration, attached deliverable count, harvested `ai/task-...` git branch badges, **`S3 Logs`** slide-over viewer (`.log`, `.jsonl`, `.patch`, `tail`), and **`Re-queue #1`**.
+    - **Last 20** finished/attention tasks (`resolved`, `pending`, `failed`, `rejected`, `cancelled`) with duration, executed model badge, attached deliverable count, harvested `ai/task-...` git branch badges, **`S3 Logs`** slide-over viewer (`.log`, `.jsonl`, `.patch`, `tail`), and **`Re-queue #1`**.
 
 ---
 
@@ -187,7 +191,8 @@ RAPIDER_BACKEND_URL=http://localhost:8081
 RAPIDER_WORKER_EMAIL=your-admin-user@domain.com
 RAPIDER_WORKER_PASSWORD=your-password
 
-# Optional Orchestrator Defaults (live-overridden by MongoDB TaskOrchestratorState)
+# Optional Orchestrator Defaults (live-overridden by MongoDB TaskOrchestratorState; never touches ~/.gemini/antigravity-cli/settings.json)
+TASK_WORKER_MODEL=gemini-3.8-flash-medium
 MAX_CONCURRENT=5
 POLL_INTERVAL_SECONDS=10
 SANDBOX_RETENTION_COUNT=20

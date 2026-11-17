@@ -11,6 +11,31 @@
 
 (function () {
   const SESSION_TOKEN_KEY = 'rapider_task_orch_admin_jwt';
+  const DEFAULT_MODEL_ID = 'gemini-3.8-flash-medium';
+  const FALLBACK_MODELS = [
+    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+    { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
+    { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+    { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+    { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+    { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
+    { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+    { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+    { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+    { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+    { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
+    { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+    { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+    { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
+    { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
+    { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+    { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
+    { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+  ];
 
   const state = {
     token: sessionStorage.getItem(SESSION_TOKEN_KEY) || '',
@@ -37,6 +62,62 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function getAvailableModels() {
+    const serverModels = state.overview?.availableModels;
+    return Array.isArray(serverModels) && serverModels.length > 0
+      ? serverModels
+      : FALLBACK_MODELS;
+  }
+
+  function getCurrentDefaultModel() {
+    return (
+      String(state.overview?.state?.defaultModel || '').trim() ||
+      DEFAULT_MODEL_ID
+    );
+  }
+
+  function formatModelLabel(modelId) {
+    const id = String(modelId || '').trim();
+    if (!id) return '';
+    const hit = getAvailableModels().find((m) => m.id === id);
+    return hit ? hit.label : id;
+  }
+
+  function buildModelOptionsHtml({
+    selectedValue = '',
+    includeDefaultOption = false,
+    defaultLabelPrefix = 'Default',
+    defaultModelId = DEFAULT_MODEL_ID,
+  } = {}) {
+    const models = getAvailableModels();
+    const selected = String(selectedValue || '').trim();
+    const options = [];
+
+    if (includeDefaultOption) {
+      const defLabel = formatModelLabel(defaultModelId) || defaultModelId;
+      options.push(
+        `<option value=""${selected === '' ? ' selected' : ''}>${escapeHtml(defaultLabelPrefix)} (${escapeHtml(defLabel)})</option>`
+      );
+    }
+
+    let seenSelected = selected === '';
+    for (const m of models) {
+      const isSelected = m.id === selected;
+      if (isSelected) seenSelected = true;
+      options.push(
+        `<option value="${escapeHtml(m.id)}"${isSelected ? ' selected' : ''}>${escapeHtml(m.label)}</option>`
+      );
+    }
+
+    if (!seenSelected && selected) {
+      options.push(
+        `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}</option>`
+      );
+    }
+
+    return options.join('');
   }
 
   function formatDateTime(iso) {
@@ -504,12 +585,12 @@
 
       renderHeaderAndWorkers();
       renderActiveTasks();
-      renderQueueTable();
+      renderQueueTable(opts);
       renderHistoryTable();
       populateWorkspaceDropdown();
 
       if (state.logViewer.open && state.logViewer.type === 'details') {
-        renderDrawerTaskDetails();
+        renderDrawerTaskDetails(opts);
       }
 
       document.getElementById('lastSyncedLabel').textContent =
@@ -561,6 +642,16 @@
       maxInput.value = String(ov.metrics.maxConcurrent);
     }
 
+    const defaultModelSelect = document.getElementById('defaultModelSelect');
+    if (defaultModelSelect && document.activeElement !== defaultModelSelect) {
+      const currentModel = getCurrentDefaultModel();
+      defaultModelSelect.innerHTML = buildModelOptionsHtml({
+        selectedValue: currentModel,
+        includeDefaultOption: false,
+      });
+      defaultModelSelect.value = currentModel;
+    }
+
     const workersStrip = document.getElementById('workersStrip');
     const workers = Array.isArray(ov.state.workers) ? ov.state.workers : [];
     if (workers.length === 0) {
@@ -577,7 +668,8 @@
               : w.platform === 'linux'
                 ? 'fab fa-linux'
                 : 'fas fa-server';
-          return `<span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-700" title="Last heartbeat: ${escapeHtml(formatDateTime(w.lastHeartbeatAt))}">
+          const modelNote = w.defaultModelObserved ? ` • ${w.defaultModelObserved}` : '';
+          return `<span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] text-slate-700" title="Last heartbeat: ${escapeHtml(formatDateTime(w.lastHeartbeatAt))}${escapeHtml(modelNote)}">
             <span class="w-2 h-2 rounded-full ${dotCls}"></span>
             <i class="${osIcon}"></i>
             <span class="font-semibold">${escapeHtml(w.workerId)}</span>
@@ -622,6 +714,9 @@
             (run.logTail || 'Staging sandbox...').trim().split('\n').slice(-5).join('\n')
           );
           const isSelected = state.logViewer.open && state.logViewer.workItemId === t.id;
+          const activeModelId = run.resolvedModel || t.preferredModel || getCurrentDefaultModel();
+          const activeModelLabel = formatModelLabel(activeModelId);
+          const hasOverride = Boolean(t.preferredModel);
 
           return `<div
             data-task-card-id="${escapeHtml(t.id)}"
@@ -629,9 +724,12 @@
           >
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="min-w-0">
-                <div class="flex items-center gap-2 mb-1">
+                <div class="flex flex-wrap items-center gap-2 mb-1">
                   ${statusBadgeHtml(run.status || t.status)}
                   <span class="text-[11px] font-semibold text-slate-600">${escapeHtml(t.workspaceName)}</span>
+                  <span class="inline-flex items-center gap-1 rounded-md border ${hasOverride ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'} px-2 py-0.5 text-[10px] font-semibold" title="Model: ${escapeHtml(activeModelId)}">
+                    <i class="fas fa-robot"></i>${escapeHtml(activeModelLabel)}${hasOverride ? ' (Override)' : ''}
+                  </span>
                   <span class="text-[11px] text-slate-400">• ${escapeHtml(elapsed)}</span>
                 </div>
                 <button
@@ -726,7 +824,18 @@
     `;
   }
 
-  function renderQueueTable() {
+  function renderQueueTable(opts = {}) {
+    const tbody = document.getElementById('queueTableBody');
+    if (
+      opts.silent &&
+      document.activeElement &&
+      document.activeElement.hasAttribute('data-task-model-select') &&
+      tbody &&
+      tbody.contains(document.activeElement)
+    ) {
+      return;
+    }
+
     const rawQueue = Array.isArray(state.overview?.nextQueue)
       ? state.overview.nextQueue
       : [];
@@ -743,6 +852,7 @@
             item.bodyMarkdown,
             extractExactUserRequest(item),
             item.workspaceName,
+            item.preferredModel,
             item.status,
             item.id,
           ]
@@ -751,21 +861,26 @@
           return hay.includes(term);
         });
 
-    const tbody = document.getElementById('queueTableBody');
     if (filtered.length === 0) {
       tbody.innerHTML = `<tr>
-        <td colspan="6" class="py-10 text-center text-xs text-slate-500">
+        <td colspan="7" class="py-10 text-center text-xs text-slate-500">
           ${term ? 'No queued tasks match your active search filter.' : 'No tasks waiting in the queue. Click <strong>+ New Task</strong> to enqueue one.'}
         </td>
       </tr>`;
       return;
     }
 
+    const currentDefaultModel = getCurrentDefaultModel();
+
     tbody.innerHTML = filtered
       .map((item) => {
         const exactPrompt = extractExactUserRequest(item);
         const descPreview = extractTaskDescriptionPreview(item, 170);
         const isSelected = state.logViewer.open && state.logViewer.workItemId === item.id;
+        const selectedTaskModel = String(item.preferredModel || '').trim();
+        const modelSelectCls = selectedTaskModel
+          ? 'border-indigo-300 bg-indigo-50/70 text-indigo-900 font-semibold'
+          : 'border-slate-200 bg-white text-slate-600';
 
         return `<tr
           draggable="${term ? 'false' : 'true'}"
@@ -799,6 +914,20 @@
             </div>
           </td>
           <td class="py-3 px-3.5 font-medium text-slate-700">${escapeHtml(item.workspaceName)}</td>
+          <td class="py-3 px-3.5">
+            <select
+              data-task-model-select="${escapeHtml(item.id)}"
+              aria-label="Model for ${escapeHtml(item.title)}"
+              class="w-full max-w-[185px] rounded-md border ${modelSelectCls} px-2 py-1 text-[11px] focus:border-blue-600 focus:outline-none cursor-pointer"
+            >
+              ${buildModelOptionsHtml({
+                selectedValue: selectedTaskModel,
+                includeDefaultOption: true,
+                defaultLabelPrefix: 'Default',
+                defaultModelId: currentDefaultModel,
+              })}
+            </select>
+          </td>
           <td class="py-3 px-3.5 whitespace-nowrap">${statusBadgeHtml(item.status)}</td>
           <td class="py-3 px-3.5 text-slate-500 whitespace-nowrap">${escapeHtml(formatDateTime(item.occurredAt || item.createdDate))}</td>
           <td class="py-3 px-3.5 text-right whitespace-nowrap">
@@ -864,6 +993,7 @@
     const filtered = !term
       ? rawHistory
       : rawHistory.filter((item) => {
+          const run = item.execution || {};
           const hay = [
             item.title,
             item.summary,
@@ -871,6 +1001,8 @@
             extractExactUserRequest(item),
             item.outcome,
             item.workspaceName,
+            item.preferredModel,
+            run.resolvedModel,
             item.status,
             item.id,
           ]
@@ -937,6 +1069,11 @@
           <td class="py-3 px-3.5 whitespace-nowrap">
             ${statusBadgeHtml(item.status)}
             ${duration ? `<div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(duration)}</div>` : ''}
+            ${
+              run.resolvedModel || item.preferredModel
+                ? `<div class="mt-1"><span class="inline-flex items-center gap-1 rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600" title="${escapeHtml(run.resolvedModel || item.preferredModel)}"><i class="fas fa-robot text-[9px]"></i>${escapeHtml(formatModelLabel(run.resolvedModel || item.preferredModel))}</span></div>`
+                : ''
+            }
           </td>
           <td class="py-3 px-3.5">
             <div class="flex flex-col gap-1">
@@ -1001,6 +1138,19 @@
     }
   }
 
+  function populateNewTaskModelDropdown() {
+    const select = document.getElementById('newTaskModel');
+    if (!select) return;
+    const prevVal = select.value || '';
+    select.innerHTML = buildModelOptionsHtml({
+      selectedValue: prevVal,
+      includeDefaultOption: true,
+      defaultLabelPrefix: 'Use Default',
+      defaultModelId: getCurrentDefaultModel(),
+    });
+    select.value = prevVal;
+  }
+
   // ---------------------------------------------------------------------------
   // Slide-Over Task Request/Context & Private S3 Log Inspector Drawer
   // ---------------------------------------------------------------------------
@@ -1017,11 +1167,21 @@
     });
   }
 
-  function renderDrawerTaskDetails() {
+  function renderDrawerTaskDetails(opts = {}) {
     const { workItemId } = state.logViewer;
     const panel = document.getElementById('taskDetailsPanel');
     const pre = document.getElementById('logContentPre');
     const badge = document.getElementById('logSourceBadge');
+
+    if (
+      opts.silent &&
+      document.activeElement &&
+      document.activeElement.hasAttribute('data-task-model-select') &&
+      panel &&
+      panel.contains(document.activeElement)
+    ) {
+      return;
+    }
 
     pre.classList.add('hidden');
     panel.classList.remove('hidden');
@@ -1091,6 +1251,29 @@
             <div class="text-slate-400 uppercase font-semibold text-[10px]">Worker</div>
             <div class="text-slate-700 font-mono truncate mt-0.5" title="${escapeHtml(run.workerId || '—')}">${escapeHtml(run.workerId || '—')}</div>
           </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+          <div class="flex items-center gap-2 flex-wrap">
+            <label class="text-slate-500 font-semibold uppercase text-[10px]">Task Model:</label>
+            <select
+              data-task-model-select="${escapeHtml(item.id)}"
+              aria-label="Override task model"
+              class="rounded-md border ${item.preferredModel ? 'border-indigo-300 bg-indigo-50 text-indigo-900 font-semibold' : 'border-slate-300 bg-white text-slate-700'} px-2 py-1 text-xs focus:border-blue-600 focus:outline-none cursor-pointer"
+            >
+              ${buildModelOptionsHtml({
+                selectedValue: String(item.preferredModel || '').trim(),
+                includeDefaultOption: true,
+                defaultLabelPrefix: 'Use Default',
+                defaultModelId: getCurrentDefaultModel(),
+              })}
+            </select>
+          </div>
+          ${
+            run.resolvedModel
+              ? `<div class="text-slate-500">Executed Model: <code class="text-slate-700 font-semibold">${escapeHtml(run.resolvedModel)}</code></div>`
+              : `<div class="text-slate-500">Effective: <code class="text-slate-700 font-semibold">${escapeHtml(item.preferredModel || getCurrentDefaultModel())}</code></div>`
+          }
         </div>
 
         ${
@@ -1347,6 +1530,31 @@
       }
     });
 
+    // Live Default Model update
+    const defaultModelSelect = document.getElementById('defaultModelSelect');
+    if (defaultModelSelect) {
+      defaultModelSelect.addEventListener('change', async () => {
+        const nextModel = defaultModelSelect.value;
+        defaultModelSelect.disabled = true;
+        try {
+          await apiFetch('/admin/task-orchestrator/config', {
+            method: 'PATCH',
+            body: { defaultModel: nextModel },
+          });
+          showToast(
+            `Default model updated to ${formatModelLabel(nextModel)}.`,
+            'success'
+          );
+          await refreshAllData();
+        } catch (err) {
+          showToast(err.message, 'error');
+          await refreshAllData({ silent: true });
+        } finally {
+          defaultModelSelect.disabled = false;
+        }
+      });
+    }
+
     // Soft Pause / Resume
     document.getElementById('togglePauseBtn').addEventListener('click', async () => {
       try {
@@ -1393,6 +1601,7 @@
     const closeModal = () => modal.classList.add('hidden');
     document.getElementById('openNewTaskModalBtn').addEventListener('click', () => {
       populateWorkspaceDropdown();
+      populateNewTaskModelDropdown();
       modal.classList.remove('hidden');
     });
     document.getElementById('closeNewTaskModalBtn').addEventListener('click', closeModal);
@@ -1407,16 +1616,27 @@
       btn.style.setProperty('color', '#ffffff', 'important');
       try {
         const projectId = document.getElementById('newTaskWorkspace').value;
+        const preferredModel = (document.getElementById('newTaskModel')?.value || '').trim() || null;
         const title = document.getElementById('newTaskTitle').value.trim();
         const bodyMarkdown = document.getElementById('newTaskBody').value.trim();
         const pinToTop = document.getElementById('newTaskPinTop').checked;
 
         await apiFetch('/admin/task-orchestrator/queue/tasks', {
           method: 'POST',
-          body: { projectId, title, summary: title, bodyMarkdown, pinToTop },
+          body: {
+            projectId,
+            title,
+            summary: title,
+            bodyMarkdown,
+            pinToTop,
+            ...(preferredModel ? { preferredModel } : {}),
+          },
         });
         document.getElementById('newTaskTitle').value = '';
         document.getElementById('newTaskBody').value = '';
+        if (document.getElementById('newTaskModel')) {
+          document.getElementById('newTaskModel').value = '';
+        }
         closeModal();
         showToast(
           pinToTop ? 'Task pinned at Rank #1!' : 'Task added to queue.',
@@ -1507,6 +1727,38 @@
         state.logViewer.type = btn.getAttribute('data-log-type') || 'details';
         loadAndRenderDrawerLog();
       });
+    });
+
+    // Delegated per-task model override changes (Queue rows & Task Inspector Drawer)
+    document.body.addEventListener('change', async (ev) => {
+      const modelSelect = ev.target.closest('[data-task-model-select]');
+      if (!modelSelect) return;
+      const workItemId = modelSelect.getAttribute('data-task-model-select');
+      if (!workItemId) return;
+      const preferredModel = (modelSelect.value || '').trim() || null;
+
+      modelSelect.disabled = true;
+      try {
+        await apiFetch(
+          `/admin/task-orchestrator/tasks/${encodeURIComponent(workItemId)}/model`,
+          {
+            method: 'PATCH',
+            body: { preferredModel },
+          }
+        );
+        showToast(
+          preferredModel
+            ? `Task pinned to ${formatModelLabel(preferredModel)}.`
+            : `Task reset to default model (${formatModelLabel(getCurrentDefaultModel())}).`,
+          'success'
+        );
+        await refreshAllData();
+      } catch (err) {
+        showToast(err.message, 'error');
+        await refreshAllData({ silent: true });
+      } finally {
+        modelSelect.disabled = false;
+      }
     });
 
     // Delegated actions across tables/cards

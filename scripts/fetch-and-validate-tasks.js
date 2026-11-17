@@ -587,6 +587,7 @@ async function fetchAndValidateTasks(options = {}) {
       needsAttention: Boolean(wi.needsAttention),
       revision: typeof wi.revision === 'number' ? wi.revision : 1,
       priority: wi.priority ?? 2,
+      preferredModel: wi.preferredModel || null,
       occurredAt: wi.occurredAt || wi.createdDate || new Date().toISOString(),
       createdDate: wi.createdDate || null,
       title: wi.title || 'Workspace Task',

@@ -13,19 +13,20 @@ Standalone, zero-external-dependency Admin Web UI and reverse API proxy for moni
 
 2. **Live Global Orchestrator Controls (Rapider MongoDB `TaskOrchestratorState`)**
    - **Dynamic `MAX_CONCURRENT` (`1..100`, default `5`)**: Adjust worker concurrency live without restarting `isolated-task-orchestrator.js`.
+   - **Live Default Model Selector (`Default Model`, default `gemini-3.8-flash-medium`)**: Switch the default `agy --model` used across all workers live via `PATCH /admin/task-orchestrator/config` (never modifies global `~/.gemini/antigravity-cli/settings.json`).
    - **Soft Pause / Hard Pause / Resume**:
      - *Soft Pause*: Stops claiming new tasks while allowing active sandboxes to finish cleanly.
      - *Hard Pause*: Stops claiming new tasks **and** broadcasts `SIGTERM -> SIGKILL` to every running worker process group.
    - **Poll Interval & Sandbox Retention**: Tune `pollIntervalSeconds` (`2..300s`) and `sandboxRetentionCount` (`0..100`) live.
-   - **Active Workers Heartbeat Bar**: Inspect live worker hostnames, PIDs, OS (`darwin` / `linux`), active task slots, and last heartbeat timestamps.
+   - **Active Workers Heartbeat Bar**: Inspect live worker hostnames, PIDs, OS (`darwin` / `linux`), active task slots, observed model, and last heartbeat timestamps.
 
 3. **Tab 1 — Active & Upcoming Queue (`Running` + `Next 20`)**
-   - **Currently In-Progress Tasks**: Live elapsed runtime, Workspace name, worker ID/PID, mounted repos, **inline verbatim User Request + Task Context preview**, **Context** inspector button, **Logs** button, and one-click **Kill** (`kill_task` signal).
-   - **Next 20 Queued Tasks**: Ordered deterministically by `(queueOrder ASC, createdDate ASC)`, displaying title, verbatim `User asked` prompt, and stripped Markdown description preview.
+   - **Currently In-Progress Tasks**: Live elapsed runtime, Workspace name, active model badge (`resolvedModel`), worker ID/PID, mounted repos, **inline verbatim User Request + Task Context preview**, **Context** inspector button, **Logs** button, and one-click **Kill** (`kill_task` signal).
+   - **Next 20 Queued Tasks**: Ordered deterministically by `(queueOrder ASC, createdDate ASC)`, displaying title, verbatim `User asked` prompt, stripped Markdown description preview, and an **inline per-task Model dropdown** (`PATCH /admin/task-orchestrator/tasks/{id}/model`) to pin a specific model or leave on `Default`.
    - **Queue Ordering Controls**:
      - **Drag-and-Drop Row Reordering** + `▲` / `▼` step buttons (`PATCH /admin/task-orchestrator/queue/reorder`).
      - **Pin to Top** (`#1`) — sets `queueOrder = min(queueOrder) - 1000`.
-     - **+ New Task Modal** (`POST /admin/task-orchestrator/queue/tasks`) — select any Workspace (`Project`), specify title, Markdown prompt/instructions, and immediately enqueue at the top (`pinToTop: true`) or bottom of the queue.
+     - **+ New Task Modal** (`POST /admin/task-orchestrator/queue/tasks`) — select any Workspace (`Project`), optionally choose a task-specific **Task Model** (or `Use Default`), specify title, Markdown prompt/instructions, and immediately enqueue at the top (`pinToTop: true`) or bottom of the queue.
 
 4. **Tab 2 — Execution History (`Last 20`) & Slide-Over Task Inspector Drawer**
    - **Last 20 Past Executions**: Displays `completed` / `resolved`, `failed`, `killed`, `rejected`, `cancelled`, and `pending` runs with verbatim user prompt, outcome preview, durations, harvested branch names, and deliverable file counts.
