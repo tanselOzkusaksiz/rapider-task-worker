@@ -423,6 +423,17 @@ function runInOsSandbox({
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // Prevent macOS idle/Wi-Fi sleep strictly for the lifetime of real `agy` child processes
+    if (platform === 'darwin' && !commandSpec && child.pid && fs.existsSync('/usr/bin/caffeinate')) {
+      try {
+        const caff = spawn('/usr/bin/caffeinate', ['-i', '-w', String(child.pid)], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        caff.unref();
+      } catch (_) {}
+    }
+
     if (onPid && child.pid) {
       Promise.resolve(
         onPid(child.pid, {

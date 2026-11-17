@@ -134,6 +134,23 @@ class IsolatedTaskOrchestrator {
     return data;
   }
 
+  async adminApiReliable(method, endpointPath, body = undefined, maxAttempts = 6) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.adminApi(method, endpointPath, body);
+      } catch (err) {
+        lastErr = err;
+        if (this.customApiHandler || attempt >= maxAttempts) {
+          break;
+        }
+        const delayMs = Math.min(10000, 2000 * attempt);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  }
+
   async fetchWorkItemEvents(projectId, workItemId) {
     if (this.customApiHandler || this.offline) return [];
     try {
@@ -310,9 +327,15 @@ class IsolatedTaskOrchestrator {
         this.pendingAckSignalIds.add(sig.id);
       } else if (sig.signalType === 'kill_task' && sig.workItemId) {
         const hit = this.activeRuns.get(sig.workItemId);
-        if (hit && hit.killFn) {
-          await hit.killFn();
-          this.pendingAckSignalIds.add(sig.id);
+        if (hit) {
+          const sigMs = sig.requestedAt ? Date.parse(sig.requestedAt) : 0;
+          if (sigMs && hit.claimedAtMs && sigMs < hit.claimedAtMs - 1000) {
+            // Stale kill signal from a prior execution before the task was re-queued: ack & ignore
+            this.pendingAckSignalIds.add(sig.id);
+          } else if (hit.killFn) {
+            await hit.killFn();
+            this.pendingAckSignalIds.add(sig.id);
+          }
         }
       }
     }
@@ -328,6 +351,7 @@ class IsolatedTaskOrchestrator {
     const runTracker = {
       runId,
       workItem,
+      claimedAtMs: Date.now(),
       sandboxId: null,
       killFn: null,
     };
@@ -480,18 +504,23 @@ class IsolatedTaskOrchestrator {
       }
 
       if (execResult.externallyKilled) {
-        await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
+        const killedMsg = 'Terminated by Admin kill/hard-pause signal.';
+        await this.adminApiReliable('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
           status: 'killed',
           exitCode: execResult.exitCode,
           logTail: execResult.logTail,
-          errorReason: 'Terminated by Admin kill/hard-pause signal.',
+          errorReason: killedMsg,
+          resultSummary: killedMsg,
+          workItemStatus: 'failed',
+          workItemOutcome: killedMsg,
+          needsAttention: true,
         });
         return;
       }
 
       if (execResult.timedOut) {
         const timeoutMsg = 'The background task exceeded its maximum execution time limit and was safely stopped.';
-        await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
+        await this.adminApiReliable('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
           status: 'failed',
           exitCode: execResult.exitCode,
           logTail: execResult.logTail,
@@ -558,7 +587,7 @@ class IsolatedTaskOrchestrator {
         aiRecommendation = '';
       }
 
-      await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
+      await this.adminApiReliable('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: finalStatus,
         taskCategory: outcome.taskCategory || 'general',
         exitCode: execResult.exitCode,
@@ -582,7 +611,7 @@ class IsolatedTaskOrchestrator {
     } catch (err) {
       const safeUserError =
         'An unexpected error occurred while processing this background task. An administrator can inspect the execution logs and re-queue the task.';
-      await this.adminApi('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
+      await this.adminApiReliable('PATCH', `/admin/task-orchestrator/worker/runs/${encodeURIComponent(runId)}`, {
         status: 'failed',
         errorReason: err.message,
         resultSummary: safeUserError,
