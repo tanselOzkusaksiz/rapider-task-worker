@@ -475,8 +475,8 @@ test('IsolatedTaskOrchestrator dynamic concurrency & Management UI server gatewa
   assert.equal(allowedRes.status, 200);
 });
 
-test('Worker model precedence: default gemini-pro-orchestrator, live orchestrator sync & per-task override', async (t) => {
-  assert.equal(DEFAULT_TASK_WORKER_MODEL, 'gemini-pro-orchestrator');
+test('Worker model precedence: default gemini-3.8-flash-medium, live orchestrator sync & per-task override', async (t) => {
+  assert.equal(DEFAULT_TASK_WORKER_MODEL, 'gemini-3.8-flash-medium');
 
   const tmpDir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'rapider-orch-model-'))
@@ -488,7 +488,7 @@ test('Worker model precedence: default gemini-pro-orchestrator, live orchestrato
   const appsCloneRoot = path.join(tmpDir, 'APPS');
   const bareCacheRoot = path.join(tmpDir, '_cache');
 
-  // 1. Verify runInOsSandbox passes --model gemini-pro-orchestrator by default and custom model when passed
+  // 1. Verify runInOsSandbox passes --model gemini-3.8-flash-medium by default and custom model when passed
   const manifest = await stageTaskSandbox({
     workItem: {
       id: 'wi-model-probe',
@@ -542,11 +542,11 @@ test('Worker model precedence: default gemini-pro-orchestrator, live orchestrato
     bareCacheRoot,
   });
   assert.equal(defaultExec.exitCode, 0, defaultExec.logTail);
-  assert.equal(defaultExec.model, 'gemini-pro-orchestrator');
+  assert.equal(defaultExec.model, 'gemini-3.8-flash-medium');
   const defaultArgs = JSON.parse(fs.readFileSync(capturedArgsFile, 'utf8'));
   const defaultModelIdx = defaultArgs.indexOf('--model');
   assert.ok(defaultModelIdx >= 0);
-  assert.equal(defaultArgs[defaultModelIdx + 1], 'gemini-pro-orchestrator');
+  assert.equal(defaultArgs[defaultModelIdx + 1], 'gemini-3.8-flash-medium');
 
   const overrideExec = await runInOsSandbox({
     manifest,
@@ -575,7 +575,7 @@ test('Worker model precedence: default gemini-pro-orchestrator, live orchestrato
     workerId: 'model-test-worker',
     once: true,
     offline: true,
-    initialModel: 'gemini-pro-orchestrator',
+    initialModel: 'gemini-3.8-flash-medium',
     syncStartupModel: true,
     sandboxesRoot,
     workspacesRoot,
@@ -650,7 +650,7 @@ test('Worker model precedence: default gemini-pro-orchestrator, live orchestrato
   await orch.start();
 
   assert.equal(configPatches.length, 1);
-  assert.equal(configPatches[0].defaultModel, 'gemini-pro-orchestrator');
+  assert.equal(configPatches[0].defaultModel, 'gemini-3.8-flash-medium');
   assert.equal(orch.defaultModel, 'gemini-4-argon-high');
 
   const inheritRun = runUpdates.find(
