@@ -228,6 +228,116 @@
     return stripMarkdownText(body || item.summary || '', maxChars);
   }
 
+  const privateFileUrlCache = new Map();
+  const PRIVATE_FILE_CACHE_TTL_MS = 10 * 60 * 1000;
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  function parseRapiderPrivateFileRef(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    let val = raw.trim();
+    if (/^unsafe:/i.test(val)) val = val.replace(/^unsafe:/i, '').trim();
+    const origin = window.location ? window.location.origin : '';
+    if (origin && val.startsWith(`${origin}/rapider-private-file/`)) {
+      val = val.slice(origin.length);
+    }
+    const m = val.match(/^(?:rapider-private-file:\/\/|rapider-private-file:\/?|(?:\.?\/)?rapider-private-file\/)(.+)$/i);
+    if (!m || !m[1]) return null;
+    let rest = m[1].trim().replace(/^s3:\/\/[^/]+\//i, '').split(/[?#]/)[0].replace(/^\/+/, '');
+    if (/%[0-9a-f]{2}/i.test(rest)) {
+      try { rest = decodeURIComponent(rest); } catch {}
+    }
+    if (!rest || rest.split('/').some((s) => s === '..' || s === '.')) return null;
+    const isUuid = UUID_REGEX.test(rest);
+    const lastSeg = rest.split('/').pop() || 'download';
+    const fileName = lastSeg.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i, '') || lastSeg;
+    return { keyOrId: rest, isProjectFileId: isUuid, fileName };
+  }
+
+  async function resolvePrivateFileUrl(rawRef) {
+    const parsed = parseRapiderPrivateFileRef(rawRef);
+    const target = parsed ? parsed.keyOrId : String(rawRef || '').trim().replace(/^s3:\/\/[^/]+\//i, '').replace(/^\/+/, '');
+    if (!target) throw new Error('Invalid private file reference');
+    if (!parsed && /^https?:\/\//i.test(target)) return target;
+
+    const cached = privateFileUrlCache.get(target);
+    if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+    const isUuid = parsed ? parsed.isProjectFileId : UUID_REGEX.test(target);
+    const endpoint = isUuid
+      ? `/file-management/download-private-project-file-by-id/${encodeURIComponent(target)}`
+      : `/file-management/private-download-url/${encodeURIComponent(target)}`;
+    const res = await apiFetch(endpoint);
+    if (!res || !res.downloadUrl) throw new Error('Failed to resolve pre-signed URL');
+    privateFileUrlCache.set(target, { url: res.downloadUrl, expiresAt: Date.now() + PRIVATE_FILE_CACHE_TTL_MS });
+    return res.downloadUrl;
+  }
+
+  async function downloadPrivateFile(rawRef, preferredName) {
+    const parsed = parseRapiderPrivateFileRef(rawRef);
+    const fileName = (preferredName || parsed?.fileName || String(rawRef || '').split('/').pop()?.split(/[?#]/)[0] || 'download').trim();
+    const signedUrl = await resolvePrivateFileUrl(rawRef);
+    try {
+      const resp = await fetch(signedUrl);
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = fileName;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        return;
+      }
+    } catch {}
+    const a = document.createElement('a');
+    a.href = signedUrl;
+    a.download = fileName;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function resolvePrivateMediaIn(root) {
+    if (!root) return;
+    root.querySelectorAll('img[src]').forEach((img) => {
+      const rawSrc = img.getAttribute('src');
+      if (!rawSrc || !parseRapiderPrivateFileRef(rawSrc) || img.dataset.rapiderResolving === 'true') return;
+      img.dataset.rapiderResolving = 'true';
+      resolvePrivateFileUrl(rawSrc)
+        .then((url) => { img.src = url; })
+        .catch(() => {})
+        .finally(() => { delete img.dataset.rapiderResolving; });
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const deliverableBtn = event.target?.closest?.('button[data-deliverable-ref]');
+    if (deliverableBtn) {
+      const ref = deliverableBtn.getAttribute('data-deliverable-ref');
+      const name = deliverableBtn.getAttribute('data-deliverable-name') || undefined;
+      if (ref) {
+        event.preventDefault();
+        downloadPrivateFile(ref, name).catch((err) => alert(`Download failed: ${err.message}`));
+      }
+      return;
+    }
+    const anchor = event.target?.closest?.('a[href], a[data-rapider-private-file]');
+    if (!anchor) return;
+    const rawHref = anchor.getAttribute('data-rapider-private-file') || anchor.getAttribute('href') || '';
+    if (!parseRapiderPrivateFileRef(rawHref)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    downloadPrivateFile(rawHref, anchor.getAttribute('download') || undefined).catch((err) => {
+      alert(`Failed to download private file: ${err.message}`);
+    });
+  }, true);
+
   /**
    * XSS-safe GFM Markdown renderer supporting headings, blockquotes, lists, tables,
    * fenced code blocks, inline code, links, bold/italic, and horizontal rules.
@@ -239,6 +349,14 @@
       return `@@INLINECODE_${idx}@@`;
     });
 
+    out = out.replace(
+      /!\[([^\]]*)]\(((?:https?:\/\/|rapider-private-file:\/\/|\.?\/?rapider-private-file\/)[^\s)]+)\)/gi,
+      '<img src="$2" alt="$1" class="max-w-full rounded-lg border border-slate-200 my-2" />'
+    );
+    out = out.replace(
+      /\[([^\]]+)]\(((?:rapider-private-file:\/\/|\.?\/?rapider-private-file\/)[^\s)]+)\)/gi,
+      '<a href="$2" data-rapider-private-file="$2" class="text-blue-600 underline cursor-pointer">$1</a>'
+    );
     out = out.replace(
       /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
@@ -1381,10 +1499,11 @@
                   .map((f) => {
                     const name = f.name || f.fileName || f.title || f.id || 'Deliverable';
                     const folder = f.folderPath || '/Task Outputs';
-                    return `<span class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700" title="${escapeHtml(`${folder}/${name}`)}">
+                    const ref = f.url || f.path || f.id || '';
+                    return `<button type="button" data-deliverable-ref="${escapeHtml(ref)}" data-deliverable-name="${escapeHtml(name)}" class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 px-2.5 py-1.5 text-xs text-slate-700 cursor-pointer transition-colors" title="Download ${escapeHtml(`${folder}/${name}`)}">
                       <i class="fas fa-file-download text-blue-600"></i>
                       <span class="font-medium">${escapeHtml(name)}</span>
-                    </span>`;
+                    </button>`;
                   })
                   .join('')}
               </div>
@@ -1392,6 +1511,7 @@
           : ''
       }
     `;
+    resolvePrivateMediaIn(panel);
   }
 
   async function loadAndRenderDrawerLog() {
